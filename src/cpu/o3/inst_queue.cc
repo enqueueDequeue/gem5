@@ -560,48 +560,170 @@ InstructionQueue::hasReadyInsts()
 }
 
 void
+InstructionQueue::finalizeInsertForCycle()
+{
+    // todo: insert all the instructions
+    // regScoreBoard MUST be updated correctly when using the cached graph
+    // all instructions are being added as normal instrcutions,
+    // MUST add these correctly
+    // while replacing addToDependents
+    // USE program counter as the key to the dependency graph
+    // prebuilt dependency graph can then be injected into the real graph
+
+
+    // internal dependency graph
+    DependencyGraph<DynInstPtr> dependGraphInternal;
+    dependGraphInternal.resize(numPhysRegs);
+
+    int queuedInstructions = 0;
+
+    for (DynInstPtr &new_inst : temporaryInstInsertQueue) {
+        if (new_inst->isFloating()) {
+            iqIOStats.fpInstQueueWrites++;
+        } else if (new_inst->isVector()) {
+            iqIOStats.vecInstQueueWrites++;
+        } else {
+            iqIOStats.intInstQueueWrites++;
+        }
+
+        // Make sure the instruction is valid
+        assert(new_inst);
+
+        DPRINTF(IQ, "Finalizing Adding instruction [sn:%llu] PC %s to the IQ.\n",
+                new_inst->seqNum, new_inst->pcState());
+
+        // if (0 == freeEntries) {
+        //     break;
+        // }
+
+        queuedInstructions += 1;
+
+        // assert(freeEntries != 0);
+
+        instList[new_inst->threadNumber].push_back(new_inst);
+
+        --freeEntries;
+
+        new_inst->setInIQ();
+
+        // Look through its source registers (physical regs), and mark any
+        // dependencies.
+        // addToDependents(new_inst);
+        {
+            // Loop through the instruction's source registers, adding
+            // them to the dependency list if they are not ready.
+            int8_t total_src_regs = new_inst->numSrcRegs();
+
+            for (int src_reg_idx = 0;
+                src_reg_idx < total_src_regs;
+                src_reg_idx++)
+            {
+                // todo: add the instruction even when the instruction's
+                // registers are ready
+
+                // Only add it to the dependency graph if it's not ready.
+                if (!new_inst->readySrcIdx(src_reg_idx)) {
+                    PhysRegIdPtr src_reg = new_inst->renamedSrcIdx(src_reg_idx);
+
+                    // Check the IQ's scoreboard to make sure the register
+                    // hasn't become ready while the instruction was in flight
+                    // between stages.  Only if it really isn't ready should
+                    // it be added to the dependency graph.
+                    if (src_reg->isFixedMapping()) {
+                        continue;
+                    } else if (!regScoreboard[src_reg->flatIndex()]) {
+                        DPRINTF(IQ, "Instruction PC %s has src reg %i (%s) that "
+                                "is being added to the dependency chain.\n",
+                                new_inst->pcState(), src_reg->index(),
+                                src_reg->className());
+
+                        dependGraphInternal.insert(src_reg->flatIndex(), new_inst);
+
+                        // Change the return value to indicate that something
+                        // was added to the dependency graph.
+                        // return_val = true;
+                    } else {
+                        DPRINTF(IQ, "Instruction PC %s has src reg %i (%s) that "
+                                "became ready before it reached the IQ.\n",
+                                new_inst->pcState(), src_reg->index(),
+                                src_reg->className());
+                        // Mark a register ready within the instruction.
+                        new_inst->markSrcRegReady(src_reg_idx);
+                    }
+                }
+            }
+        }
+
+        DPRINTF(IQ, "internal Dependency graph entry created\n");
+
+        // Have this instruction set itself as the producer of its destination
+        // register(s).
+        // addToProducers(new_inst);
+        {
+            // Nothing really needs to be marked when an instruction becomes
+            // the producer of a register's value, but for convenience a ptr
+            // to the producing instruction will be placed in the head node of
+            // the dependency links.
+            int8_t total_dest_regs = new_inst->numDestRegs();
+
+            for (int dest_reg_idx = 0;
+                dest_reg_idx < total_dest_regs;
+                dest_reg_idx++)
+            {
+                PhysRegIdPtr dest_reg = new_inst->renamedDestIdx(dest_reg_idx);
+
+                // Some registers have fixed mapping, and there is no need to track
+                // dependencies as these instructions must be executed at commit.
+                if (dest_reg->isFixedMapping()) {
+                    continue;
+                }
+
+                if (!dependGraphInternal.empty(dest_reg->flatIndex())) {
+                    dependGraphInternal.dump();
+                    panic("Dependency graph %i (%s) (flat: %i) not empty! sn: %llu",
+                        dest_reg->index(), dest_reg->className(),
+                        dest_reg->flatIndex(), new_inst->seqNum);
+                }
+
+                dependGraphInternal.setInst(dest_reg->flatIndex(), new_inst);
+
+                // Mark the scoreboard to say it's not yet ready.
+                regScoreboard[dest_reg->flatIndex()] = false;
+            }
+        }
+
+        if (new_inst->isMemRef()) {
+            DPRINTF(IQ, "invoking memDepUnit\n");
+            memDepUnit[new_inst->threadNumber].insert(new_inst);
+        } else {
+            DPRINTF(IQ, "adding if ready\n");
+            addIfReady(new_inst);
+        }
+
+        ++iqStats.instsAdded;
+
+        count[new_inst->threadNumber]++;
+
+        assert(freeEntries == (numEntries - countInsts()));
+    }
+
+    DPRINTF(IQ, "Consuming the Internal Dependency graph\n");
+
+    dependGraph.consume(dependGraphInternal);
+    dependGraphInternal.reset();
+
+    for (int i = 0; i < queuedInstructions; i++) {
+       temporaryInstInsertQueue.pop_front(); 
+    }
+
+    // temporaryInstInsertQueue.clear();
+}
+
+void
 InstructionQueue::insert(const DynInstPtr &new_inst)
 {
-    if (new_inst->isFloating()) {
-        iqIOStats.fpInstQueueWrites++;
-    } else if (new_inst->isVector()) {
-        iqIOStats.vecInstQueueWrites++;
-    } else {
-        iqIOStats.intInstQueueWrites++;
-    }
-    // Make sure the instruction is valid
-    assert(new_inst);
-
-    DPRINTF(IQ, "Adding instruction [sn:%llu] PC %s to the IQ.\n",
-            new_inst->seqNum, new_inst->pcState());
-
-    assert(freeEntries != 0);
-
-    instList[new_inst->threadNumber].push_back(new_inst);
-
-    --freeEntries;
-
-    new_inst->setInIQ();
-
-    // Look through its source registers (physical regs), and mark any
-    // dependencies.
-    addToDependents(new_inst);
-
-    // Have this instruction set itself as the producer of its destination
-    // register(s).
-    addToProducers(new_inst);
-
-    if (new_inst->isMemRef()) {
-        memDepUnit[new_inst->threadNumber].insert(new_inst);
-    } else {
-        addIfReady(new_inst);
-    }
-
-    ++iqStats.instsAdded;
-
-    count[new_inst->threadNumber]++;
-
-    assert(freeEntries == (numEntries - countInsts()));
+    temporaryInstInsertQueue.push_back(new_inst);
+    // finalizeInsertForCycle();
 }
 
 void

@@ -184,6 +184,8 @@ class InstructionQueue
     /** Inserts a new instruction into the IQ. */
     void insert(const DynInstPtr &new_inst);
 
+    void finalizeInsertForCycle();
+
     /** Inserts a new, non-speculative instruction into the IQ. */
     void insertNonSpec(const DynInstPtr &new_inst);
 
@@ -335,6 +337,11 @@ class InstructionQueue
      * since, so they can now be retried. May fail again go on the blocked list.
      */
     std::list<DynInstPtr> retryMemInsts;
+
+    std::list<DynInstPtr> temporaryInstInsertQueue;
+
+    // todo: change the vector<long> to pc
+    std::map<std::vector<long>, DependencyGraph<DynInstPtr>> dependencyGraphCache;
 
     /**
      * Struct for comparing entries to be added to the priority queue.

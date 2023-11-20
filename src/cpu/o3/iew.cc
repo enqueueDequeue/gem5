@@ -958,6 +958,7 @@ IEW::dispatchInsts(ThreadID tid)
             // so that commit can process them when they reach the
             // head of commit.
             inst->setCanCommit();
+            instQueue.finalizeInsertForCycle();
             instQueue.insertNonSpec(inst);
             add_to_iq = false;
 
@@ -991,6 +992,7 @@ IEW::dispatchInsts(ThreadID tid)
                 // head of commit.
                 // @todo: This is somewhat specific to Alpha.
                 inst->setCanCommit();
+                instQueue.finalizeInsertForCycle();
                 instQueue.insertNonSpec(inst);
                 add_to_iq = false;
 
@@ -1003,6 +1005,7 @@ IEW::dispatchInsts(ThreadID tid)
         } else if (inst->isReadBarrier() || inst->isWriteBarrier()) {
             // Same as non-speculative stores.
             inst->setCanCommit();
+            instQueue.finalizeInsertForCycle();
             instQueue.insertBarrier(inst);
             add_to_iq = false;
         } else if (inst->isNop()) {
@@ -1013,6 +1016,7 @@ IEW::dispatchInsts(ThreadID tid)
             inst->setExecuted();
             inst->setCanCommit();
 
+            instQueue.finalizeInsertForCycle();
             instQueue.recordProducer(inst);
 
             cpu->executeStats[tid]->numNop++;
@@ -1030,6 +1034,8 @@ IEW::dispatchInsts(ThreadID tid)
             // Same as non-speculative stores.
             inst->setCanCommit();
 
+            instQueue.finalizeInsertForCycle();
+
             // Specifically insert it as nonspeculative.
             instQueue.insertNonSpec(inst);
 
@@ -1042,6 +1048,7 @@ IEW::dispatchInsts(ThreadID tid)
         // instruction.
         if (add_to_iq) {
             instQueue.insert(inst);
+            // issue_inst_buffer.push_back(inst);
         }
 
         insts_to_dispatch.pop();
@@ -1055,6 +1062,8 @@ IEW::dispatchInsts(ThreadID tid)
 #endif
         ppDispatch->notify(inst);
     }
+
+    instQueue.finalizeInsertForCycle();
 
     if (!insts_to_dispatch.empty()) {
         DPRINTF(IEW,"[tid:%i] Issue: Bandwidth Full. Blocking.\n", tid);

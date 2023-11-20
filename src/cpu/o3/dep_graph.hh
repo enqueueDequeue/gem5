@@ -119,6 +119,26 @@ class DependencyGraph
      */
     void dump();
 
+    void consume(DependencyGraph<DynInstPtr> &otherGraph) {
+        for (int i = 0; i < otherGraph.numEntries; i++) {
+            if (!otherGraph.empty(i)) {
+                DepEntry &entry = otherGraph.dependGraph[i];
+                DepEntry *instEntry = entry.next;
+
+                while (nullptr != instEntry) {
+                    insert(i, instEntry->inst);
+                    instEntry = instEntry->next;
+                }
+            }
+        }
+
+        for (int i = 0; i < otherGraph.numEntries; i++) {
+            if (!otherGraph.empty(i)) {
+                setInst(i, otherGraph.dependGraph[i].inst);
+            }
+        }
+    }
+
   private:
     /** Array of linked lists.  Each linked list is a list of all the
      *  instructions that depend upon a given register.  The actual
