@@ -99,6 +99,10 @@ class DependencyGraph
     void setInst(RegIndex idx, const DynInstPtr &new_inst)
     { dependGraph[idx].inst = new_inst; }
 
+    const DynInstPtr &getInst(RegIndex idx) {
+        return dependGraph[idx].inst;
+    }
+
     /** Clears the producing instruction. */
     void clearInst(RegIndex idx)
     { dependGraph[idx].inst = NULL; }
@@ -139,7 +143,7 @@ class DependencyGraph
         }
     }
 
-  private:
+  public:
     /** Array of linked lists.  Each linked list is a list of all the
      *  instructions that depend upon a given register.  The actual
      *  register's index is used to index into the graph; ie all

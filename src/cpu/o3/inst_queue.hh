@@ -77,6 +77,7 @@ namespace o3
 class FUPool;
 class CPU;
 class IEW;
+class LookupCache;
 
 /**
  * A standard instruction queue class.  It holds ready instructions, in
@@ -183,6 +184,8 @@ class InstructionQueue
 
     /** Inserts a new instruction into the IQ. */
     void insert(const DynInstPtr &new_inst);
+
+    LookupCache getDepGraphForInsts(std::list<DynInstPtr> instructions, int len);
 
     void finalizeInsertForCycle();
 
@@ -341,7 +344,7 @@ class InstructionQueue
     std::list<DynInstPtr> temporaryInstInsertQueue;
 
     // todo: change the vector<long> to pc
-    std::map<std::vector<long>, DependencyGraph<DynInstPtr>> dependencyGraphCache;
+    std::map<std::vector<long>, LookupCache> dependencyGraphCache;
 
     /**
      * Struct for comparing entries to be added to the priority queue.

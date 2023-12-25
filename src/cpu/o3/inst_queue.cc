@@ -63,6 +63,19 @@ namespace gem5
 namespace o3
 {
 
+const RefCountingPtr<DynInst> invalid_inst;
+
+class LookupCache {
+public:
+  std::vector<bool> regScoreBoard;
+  std::vector<DynInstPtr> srcInsts;
+  DependencyGraph<DynInstPtr> depGraph;
+
+  LookupCache(std::vector<bool> regScoreBoard,
+              std::vector<DynInstPtr> srcInsts,
+              DependencyGraph<DynInstPtr> depGraph): regScoreBoard(regScoreBoard), srcInsts(srcInsts), depGraph(depGraph) {}
+};
+
 InstructionQueue::FUCompletion::FUCompletion(const DynInstPtr &_inst,
     int fu_idx, InstructionQueue *iq_ptr)
     : Event(Stat_Event_Pri, AutoDelete),
@@ -559,56 +572,40 @@ InstructionQueue::hasReadyInsts()
     return false;
 }
 
-void
-InstructionQueue::finalizeInsertForCycle()
-{
-    // todo: insert all the instructions
-    // regScoreBoard MUST be updated correctly when using the cached graph
-    // all instructions are being added as normal instrcutions,
-    // MUST add these correctly
-    // while replacing addToDependents
-    // USE program counter as the key to the dependency graph
-    // prebuilt dependency graph can then be injected into the real graph
+void printDepGraph(DependencyGraph<DynInstPtr> dependGraph, int numPhysRegs) {
+    for (int i = 0; i < numPhysRegs; i++) {
 
+    }
+}
 
-    // internal dependency graph
+LookupCache
+InstructionQueue::getDepGraphForInsts(std::list<DynInstPtr> instructions, int len) {
+
+    std::vector<bool> regScoreboardInternal;
+    std::vector<DynInstPtr> srcInstsInternal;
     DependencyGraph<DynInstPtr> dependGraphInternal;
+
+    regScoreboardInternal.resize(numPhysRegs);
+    srcInstsInternal.resize(numPhysRegs);
     dependGraphInternal.resize(numPhysRegs);
 
-    int queuedInstructions = 0;
+    for (int i = 0; i < numPhysRegs; ++i) {
+        regScoreboard.push_back(true);
+        srcInstsInternal.push_back(invalid_inst);
+    }
 
-    for (DynInstPtr &new_inst : temporaryInstInsertQueue) {
-        if (new_inst->isFloating()) {
-            iqIOStats.fpInstQueueWrites++;
-        } else if (new_inst->isVector()) {
-            iqIOStats.vecInstQueueWrites++;
-        } else {
-            iqIOStats.intInstQueueWrites++;
+    int idx = 0;
+
+    for (DynInstPtr &new_inst : instructions) {
+        if (len == idx) {
+            break;
         }
 
-        // Make sure the instruction is valid
-        assert(new_inst);
+        idx++;
 
-        DPRINTF(IQ, "Finalizing Adding instruction [sn:%llu] PC %s to the IQ.\n",
-                new_inst->seqNum, new_inst->pcState());
+        DPRINTF(IQ, "Creating Dependents for inst: %s\n", new_inst->pcState());
 
-        // if (0 == freeEntries) {
-        //     break;
-        // }
-
-        queuedInstructions += 1;
-
-        // assert(freeEntries != 0);
-
-        instList[new_inst->threadNumber].push_back(new_inst);
-
-        --freeEntries;
-
-        new_inst->setInIQ();
-
-        // Look through its source registers (physical regs), and mark any
-        // dependencies.
-        // addToDependents(new_inst);
+        // creating dependents
         {
             // Loop through the instruction's source registers, adding
             // them to the dependency list if they are not ready.
@@ -618,52 +615,26 @@ InstructionQueue::finalizeInsertForCycle()
                 src_reg_idx < total_src_regs;
                 src_reg_idx++)
             {
-                // todo: add the instruction even when the instruction's
-                // registers are ready
-
                 // Only add it to the dependency graph if it's not ready.
-                if (!new_inst->readySrcIdx(src_reg_idx)) {
-                    PhysRegIdPtr src_reg = new_inst->renamedSrcIdx(src_reg_idx);
+                PhysRegIdPtr src_reg = new_inst->renamedSrcIdx(src_reg_idx);
 
-                    // Check the IQ's scoreboard to make sure the register
-                    // hasn't become ready while the instruction was in flight
-                    // between stages.  Only if it really isn't ready should
-                    // it be added to the dependency graph.
-                    if (src_reg->isFixedMapping()) {
-                        continue;
-                    } else if (!regScoreboard[src_reg->flatIndex()]) {
-                        DPRINTF(IQ, "Instruction PC %s has src reg %i (%s) that "
-                                "is being added to the dependency chain.\n",
-                                new_inst->pcState(), src_reg->index(),
-                                src_reg->className());
+                if (src_reg->isFixedMapping()) {
+                    continue;
+                } else {
+                    DPRINTF(IQ, "Instruction PC %s has src reg %i (%s) that "
+                            "is being added to the internal dependency graph\n",
+                            new_inst->pcState(), src_reg->index(),
+                            src_reg->className());
 
-                        dependGraphInternal.insert(src_reg->flatIndex(), new_inst);
-
-                        // Change the return value to indicate that something
-                        // was added to the dependency graph.
-                        // return_val = true;
-                    } else {
-                        DPRINTF(IQ, "Instruction PC %s has src reg %i (%s) that "
-                                "became ready before it reached the IQ.\n",
-                                new_inst->pcState(), src_reg->index(),
-                                src_reg->className());
-                        // Mark a register ready within the instruction.
-                        new_inst->markSrcRegReady(src_reg_idx);
-                    }
+                    dependGraphInternal.insert(src_reg->flatIndex(), new_inst);
                 }
             }
         }
 
-        DPRINTF(IQ, "internal Dependency graph entry created\n");
+        DPRINTF(IQ, "Creating Producers for inst: %s\n", new_inst->pcState());
 
-        // Have this instruction set itself as the producer of its destination
-        // register(s).
-        // addToProducers(new_inst);
+        // creating producers
         {
-            // Nothing really needs to be marked when an instruction becomes
-            // the producer of a register's value, but for convenience a ptr
-            // to the producing instruction will be placed in the head node of
-            // the dependency links.
             int8_t total_dest_regs = new_inst->numDestRegs();
 
             for (int dest_reg_idx = 0;
@@ -685,38 +656,153 @@ InstructionQueue::finalizeInsertForCycle()
                         dest_reg->flatIndex(), new_inst->seqNum);
                 }
 
+                // this is not actually used
                 dependGraphInternal.setInst(dest_reg->flatIndex(), new_inst);
 
-                // Mark the scoreboard to say it's not yet ready.
-                regScoreboard[dest_reg->flatIndex()] = false;
+                // this is actually used
+                srcInstsInternal[dest_reg->flatIndex()] = new_inst;
+
+                regScoreboardInternal[dest_reg->flatIndex()] = false;
             }
         }
 
-        if (new_inst->isMemRef()) {
-            DPRINTF(IQ, "invoking memDepUnit\n");
-            memDepUnit[new_inst->threadNumber].insert(new_inst);
-        } else {
-            DPRINTF(IQ, "adding if ready\n");
-            addIfReady(new_inst);
+        DPRINTF(IQ, "Completed the graph for inst: %s\n", new_inst->pcState());
+    }
+
+    DPRINTF(IQ, "Completed Graph for all insts\n");
+
+    return LookupCache(regScoreboardInternal, srcInstsInternal, dependGraphInternal);
+}
+
+DynInstPtr findInstPtr(std::list<DynInstPtr> instructions, DynInstPtr refInst) {
+    for (DynInstPtr &instruction : instructions) {
+        // if (instruction->pcState().instAddr() == refInst->pcState().instAddr() &&
+        //     instruction->pcState().microPC() == refInst->pcState().microPC()) {
+        //     return instruction;
+        // }
+
+        if (instruction->seqNum == refInst->seqNum) {
+            return instruction;
         }
-
-        ++iqStats.instsAdded;
-
-        count[new_inst->threadNumber]++;
-
-        assert(freeEntries == (numEntries - countInsts()));
     }
 
-    DPRINTF(IQ, "Consuming the Internal Dependency graph\n");
+    return nullptr;
+}
 
-    dependGraph.consume(dependGraphInternal);
-    dependGraphInternal.reset();
-
-    for (int i = 0; i < queuedInstructions; i++) {
-       temporaryInstInsertQueue.pop_front(); 
+PhysRegIdPtr findSrcPhysRegId(int idx, DynInstPtr inst) {
+    for (int i = 0; i < inst->numSrcRegs(); i++) {
+        if (idx == inst->renamedSrcIdx(i)->flatIndex()) {
+            return inst->renamedSrcIdx(i);
+        }
     }
 
-    // temporaryInstInsertQueue.clear();
+    return nullptr;
+}
+
+void
+InstructionQueue::finalizeInsertForCycle()
+{
+    // todo: insert all the instructions
+    // regScoreBoard MUST be updated correctly when using the cached graph
+    // all instructions are being added as normal instrcutions,
+    // MUST add these correctly
+    // while replacing addToDependents
+    // USE program counter as the key to the dependency graph
+    // prebuilt dependency graph can then be injected into the real graph
+
+    DPRINTF(IQ, "finalize begin\n");
+
+    int queueableInstructionsSize = temporaryInstInsertQueue.size(); // std::min((unsigned) temporaryInstInsertQueue.size(), freeEntries);
+    LookupCache newDepGraph = getDepGraphForInsts(temporaryInstInsertQueue, queueableInstructionsSize);
+
+    // this is usually done after the next for loop
+    for (int i = 0; i < numPhysRegs; i++) {
+        if (newDepGraph.srcInsts[i] != invalid_inst) {
+            DPRINTF(IQ, "finding for %i\n", i);
+
+            DynInstPtr new_inst = findInstPtr(temporaryInstInsertQueue, newDepGraph.srcInsts[i]);
+
+            assert(new_inst);
+
+            DPRINTF(IQ, "setting for %i\n", i);
+            dependGraph.setInst(i, new_inst);
+
+            // regScoreboard[dest_reg->flatIndex()] = false;
+            DPRINTF(IQ, "scoring for %i\n", i);
+            regScoreboard[i] = false;
+        }
+    }
+
+    DPRINTF(IQ, "moving depGraph\n");
+
+    for (int i = 0; i < numPhysRegs; i++) {
+        if (!newDepGraph.depGraph.empty(i)) {
+            DependencyEntry<DynInstPtr> &entry = newDepGraph.depGraph.dependGraph[i];
+            DependencyEntry<DynInstPtr> *instEntry = entry.next;
+
+            while (nullptr != instEntry) {
+                DynInstPtr new_inst = findInstPtr(temporaryInstInsertQueue, instEntry->inst);
+                assert(new_inst);
+                
+                instList[new_inst->threadNumber].push_back(new_inst);
+
+                --freeEntries;
+
+                new_inst->setInIQ();
+
+                if (!new_inst->readySrcIdx(i)) {
+                    // change begin
+                    PhysRegIdPtr src_reg = findSrcPhysRegId(i, new_inst);
+                    // todo: not `new_inst->renamedSrcIdx(i);` get the register right
+
+                    if (src_reg->isFixedMapping()) {
+                        continue;
+                    } else if (!regScoreboard[i]) {
+                        DPRINTF(IQ, "Instruction PC %s has src reg %i (%s) that "
+                                "is being added to the dependency chain.\n",
+                                new_inst->pcState(), src_reg->index(),
+                                src_reg->className());
+
+                        dependGraph.insert(i, new_inst);
+                    } else {
+                        DPRINTF(IQ, "Instruction PC %s has src reg %i (%s) that "
+                                "became ready before it reached the IQ.\n",
+                                new_inst->pcState(), src_reg->index(),
+                                src_reg->className());
+                        // Mark a register ready within the instruction.
+                        new_inst->markSrcRegReady(i);
+                    }
+                    // change end
+
+                    // dependGraph.insert(i, new_inst);
+                }
+
+                if (new_inst->isMemRef()) {
+                    DPRINTF(IQ, "invoking memDepUnit\n");
+                    memDepUnit[new_inst->threadNumber].insert(new_inst);
+                } else {
+                    DPRINTF(IQ, "adding if ready\n");
+                    addIfReady(new_inst);
+                }
+
+                ++iqStats.instsAdded;
+
+                count[new_inst->threadNumber]++;
+
+                instEntry = instEntry->next;
+            }
+        }
+    }
+
+    DPRINTF(IQ, "almost done\n");
+
+    // for (int i = 0; i < queueableInstructionsSize; i++) {
+    //     temporaryInstInsertQueue.pop_front(); 
+    // }
+
+    temporaryInstInsertQueue.clear();
+
+    DPRINTF(IQ, "finalize complete\n");
 }
 
 void
