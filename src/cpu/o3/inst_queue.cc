@@ -606,6 +606,41 @@ InstructionQueue::finalizeInsertForCycle()
 
         new_inst->setInIQ();
 
+        {
+            // Nothing really needs to be marked when an instruction becomes
+            // the producer of a register's value, but for convenience a ptr
+            // to the producing instruction will be placed in the head node of
+            // the dependency links.
+            int8_t total_dest_regs = new_inst->numDestRegs();
+
+            for (int dest_reg_idx = 0;
+                dest_reg_idx < total_dest_regs;
+                dest_reg_idx++)
+            {
+                PhysRegIdPtr dest_reg = new_inst->renamedDestIdx(dest_reg_idx);
+
+                // Some registers have fixed mapping, and there is no need to track
+                // dependencies as these instructions must be executed at commit.
+                if (dest_reg->isFixedMapping()) {
+                    continue;
+                }
+
+                if (!dependGraphInternal.empty(dest_reg->flatIndex())) {
+                    dependGraphInternal.dump();
+                    panic("Dependency graph %i (%s) (flat: %i) not empty! sn: %llu",
+                        dest_reg->index(), dest_reg->className(),
+                        dest_reg->flatIndex(), new_inst->seqNum);
+                }
+
+                dependGraphInternal.setInst(dest_reg->flatIndex(), new_inst);
+
+                // Mark the scoreboard to say it's not yet ready.
+                regScoreboard[dest_reg->flatIndex()] = false;
+            }
+        }
+
+        DPRINTF(IQ, "internal Dependency graph entry created\n");
+
         // Look through its source registers (physical regs), and mark any
         // dependencies.
         // addToDependents(new_inst);
@@ -649,48 +684,16 @@ InstructionQueue::finalizeInsertForCycle()
                                 src_reg->className());
                         // Mark a register ready within the instruction.
                         new_inst->markSrcRegReady(src_reg_idx);
+                        // dependGraphInternal.insert(src_reg->flatIndex(), new_inst);
                     }
                 }
             }
         }
 
-        DPRINTF(IQ, "internal Dependency graph entry created\n");
-
         // Have this instruction set itself as the producer of its destination
         // register(s).
         // addToProducers(new_inst);
-        {
-            // Nothing really needs to be marked when an instruction becomes
-            // the producer of a register's value, but for convenience a ptr
-            // to the producing instruction will be placed in the head node of
-            // the dependency links.
-            int8_t total_dest_regs = new_inst->numDestRegs();
-
-            for (int dest_reg_idx = 0;
-                dest_reg_idx < total_dest_regs;
-                dest_reg_idx++)
-            {
-                PhysRegIdPtr dest_reg = new_inst->renamedDestIdx(dest_reg_idx);
-
-                // Some registers have fixed mapping, and there is no need to track
-                // dependencies as these instructions must be executed at commit.
-                if (dest_reg->isFixedMapping()) {
-                    continue;
-                }
-
-                if (!dependGraphInternal.empty(dest_reg->flatIndex())) {
-                    dependGraphInternal.dump();
-                    panic("Dependency graph %i (%s) (flat: %i) not empty! sn: %llu",
-                        dest_reg->index(), dest_reg->className(),
-                        dest_reg->flatIndex(), new_inst->seqNum);
-                }
-
-                dependGraphInternal.setInst(dest_reg->flatIndex(), new_inst);
-
-                // Mark the scoreboard to say it's not yet ready.
-                regScoreboard[dest_reg->flatIndex()] = false;
-            }
-        }
+        
 
         if (new_inst->isMemRef()) {
             DPRINTF(IQ, "invoking memDepUnit\n");
