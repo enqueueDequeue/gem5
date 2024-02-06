@@ -986,10 +986,13 @@ InstructionQueue::scheduleReadyInsts()
                 }
             }
 
+            std::string inst_str = "";
+            issuing_inst->dump(inst_str);
+
             DPRINTF(IQ, "Thread %i: Issuing instruction PC %s "
-                    "[sn:%llu]\n",
+                    "[sn:%llu] [%s]\n",
                     tid, issuing_inst->pcState(),
-                    issuing_inst->seqNum);
+                    issuing_inst->seqNum, inst_str);
 
             readyInsts[op_class].pop();
 
