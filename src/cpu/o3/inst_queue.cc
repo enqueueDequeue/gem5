@@ -572,10 +572,50 @@ InstructionQueue::hasReadyInsts()
     return false;
 }
 
-void printDepGraph(DependencyGraph<DynInstPtr> dependGraph, int numPhysRegs) {
-    for (int i = 0; i < numPhysRegs; i++) {
+void printDepGraph(DependencyGraph<DynInstPtr> &depGraph) {
 
+    for (int reg_idx = 0; reg_idx < depGraph.numEntries; reg_idx++) {
+        std::string result = "";
+        const DependencyEntry<DynInstPtr> *entry = &depGraph.dependGraph[reg_idx];
+
+        result.append(std::to_string(reg_idx));
+        result.append(": ");
+
+        if (nullptr != entry) {
+            // DPRINTF(IQ, "initing\n");
+
+            if (entry->inst) {
+                result.append(std::to_string(entry->inst->seqNum));
+            } else {
+                result.append("?");
+            }
+
+            result.append(" ===> ");
+        } else {
+            // DPRINTF(IQ, "cannot init\n");
+
+            result.append(" |");
+        }
+
+        while (nullptr != entry) {
+            // DPRINTF(IQ, "appending\n");
+
+            if (entry->inst) {
+                result.append(std::to_string(entry->inst->seqNum));
+            } else {
+                result.append("?");
+            }
+            result.append(" -> ");
+
+            entry = entry->next;
+        }
+
+        result.append("\n");
+
+        DPRINTF(IQ, "dependency graph:\n %s", result);
     }
+
+    // DPRINTF(IQ, "Truncating dep graph to 100 entries\n");
 }
 
 LookupCache
@@ -671,6 +711,13 @@ InstructionQueue::getDepGraphForInsts(std::list<DynInstPtr> instructions, int le
 
     DPRINTF(IQ, "Completed Graph for all insts\n");
 
+    if (0 != len) {
+        // printDepGraph(dependGraphInternal);
+        DPRINTF(IQ, "not printing the graph, size = %i\n", len);
+    } else {
+        DPRINTF(IQ, "not printing the graph, size = 0\n");
+    }
+
     return LookupCache(regScoreboardInternal, srcInstsInternal, dependGraphInternal);
 }
 
@@ -699,6 +746,8 @@ PhysRegIdPtr findSrcPhysRegId(int idx, DynInstPtr inst) {
     return nullptr;
 }
 
+#include <unordered_set>
+
 void
 InstructionQueue::finalizeInsertForCycle()
 {
@@ -710,11 +759,20 @@ InstructionQueue::finalizeInsertForCycle()
     // USE program counter as the key to the dependency graph
     // prebuilt dependency graph can then be injected into the real graph
 
-    DPRINTF(IQ, "finalize begin\n");
+    DPRINTF(IQ, "finalize begin, queue size: %i\n", (int) temporaryInstInsertQueue.size());
 
     int queueableInstructionsSize = temporaryInstInsertQueue.size(); // std::min((unsigned) temporaryInstInsertQueue.size(), freeEntries);
     LookupCache newDepGraph = getDepGraphForInsts(temporaryInstInsertQueue, queueableInstructionsSize);
 
+    for (const auto &new_inst : temporaryInstInsertQueue) {
+        instList[new_inst->threadNumber].push_back(new_inst);
+
+        --freeEntries;
+
+        new_inst->setInIQ();
+    }
+
+    // setting up the producers
     // this is usually done after the next for loop
     for (int i = 0; i < numPhysRegs; i++) {
         if (newDepGraph.srcInsts[i] != invalid_inst) {
@@ -735,6 +793,13 @@ InstructionQueue::finalizeInsertForCycle()
 
     DPRINTF(IQ, "moving depGraph\n");
 
+    std::unordered_set<InstSeqNum> readiedInsts;
+    std::unordered_set<InstSeqNum> deppedInsts;
+
+    // todo
+    // NOTE
+    // FIX: instructions are added to the dependency vector AND also the ready queue at the same time
+
     for (int i = 0; i < numPhysRegs; i++) {
         if (!newDepGraph.depGraph.empty(i)) {
             DependencyEntry<DynInstPtr> &entry = newDepGraph.depGraph.dependGraph[i];
@@ -743,19 +808,30 @@ InstructionQueue::finalizeInsertForCycle()
             while (nullptr != instEntry) {
                 DynInstPtr new_inst = findInstPtr(temporaryInstInsertQueue, instEntry->inst);
                 assert(new_inst);
-                
-                instList[new_inst->threadNumber].push_back(new_inst);
 
-                --freeEntries;
+                int reg_src_idx = -1;
 
-                new_inst->setInIQ();
+                for (int index = 0; index < new_inst->numSrcRegs(); index++) {
+                    if (new_inst->renamedSrcIdx(index)->flatIndex() == i) {
+                        // new_inst->markSrcRegReady(index);
+                        reg_src_idx = index;
+                        break;
+                    }
+                }
 
-                if (!new_inst->readySrcIdx(i)) {
+                assert(-1 != reg_src_idx);
+
+                if (!new_inst->readySrcIdx(reg_src_idx)) {
                     // change begin
                     PhysRegIdPtr src_reg = findSrcPhysRegId(i, new_inst);
                     // todo: not `new_inst->renamedSrcIdx(i);` get the register right
 
                     if (src_reg->isFixedMapping()) {
+                        DPRINTF(IQ, "Fixed mapped register src reg %i [sn:%llu]\n",
+                                src_reg->index(),
+                                new_inst->seqNum);
+
+                        // todo: check if it's do nothing or something else
                         continue;
                     } else if (!regScoreboard[i]) {
                         DPRINTF(IQ, "Instruction PC %s has src reg %i (%s) that "
@@ -766,35 +842,57 @@ InstructionQueue::finalizeInsertForCycle()
                         dependGraph.insert(i, new_inst);
                     } else {
                         DPRINTF(IQ, "Instruction PC %s has src reg %i (%s) that "
-                                "became ready before it reached the IQ.\n",
+                                "became ready before it reached the IQ for [sn:%llu]\n",
                                 new_inst->pcState(), src_reg->index(),
-                                src_reg->className());
+                                src_reg->className(), new_inst->seqNum);
+
                         // Mark a register ready within the instruction.
-                        new_inst->markSrcRegReady(i);
+                        new_inst->markSrcRegReady(reg_src_idx);
+
+                        // for (int index = 0; index < new_inst->numSrcRegs(); index++) {
+                        //     if (new_inst->renamedSrcIdx(index)->flatIndex() == i) {
+                        //         new_inst->markSrcRegReady(index);
+                        //         break;
+                        //     }
+                        // }
                     }
                     // change end
 
                     // dependGraph.insert(i, new_inst);
                 }
 
-                if (new_inst->isMemRef()) {
-                    DPRINTF(IQ, "invoking memDepUnit\n");
-                    memDepUnit[new_inst->threadNumber].insert(new_inst);
-                } else {
-                    DPRINTF(IQ, "adding if ready\n");
-                    addIfReady(new_inst);
-                }
+                // todo: remove this?
+                // std::string inst_str = "";
+                // new_inst->dump(inst_str);
 
-                ++iqStats.instsAdded;
-
-                count[new_inst->threadNumber]++;
+                // DPRINTF(IQ, "reg: %i -> inst: [sn:%llu]: %s\n", i, new_inst->seqNum, inst_str.c_str());
 
                 instEntry = instEntry->next;
             }
         }
     }
 
+    for (const auto &new_inst : temporaryInstInsertQueue) {
+        if (new_inst->isMemRef()) {
+            DPRINTF(IQ, "invoking memDepUnit for inst [sn:%llu]\n", new_inst->seqNum);
+            memDepUnit[new_inst->threadNumber].insert(new_inst);
+        } else {
+            DPRINTF(IQ, "adding if ready for inst [sn:%llu]\n", new_inst->seqNum);
+            addIfReady(new_inst);
+        }
+
+        ++iqStats.instsAdded;
+
+        count[new_inst->threadNumber]++;
+    }
+
     DPRINTF(IQ, "almost done\n");
+
+    if (0 != queueableInstructionsSize) {
+        printDepGraph(dependGraph);
+    } else {
+        DPRINTF(IQ, "not printing the actual dep graph\n");
+    }
 
     // for (int i = 0; i < queueableInstructionsSize; i++) {
     //     temporaryInstInsertQueue.pop_front(); 
@@ -802,7 +900,7 @@ InstructionQueue::finalizeInsertForCycle()
 
     temporaryInstInsertQueue.clear();
 
-    DPRINTF(IQ, "finalize complete\n");
+    DPRINTF(IQ, "finalize complete, queue size: %i\n", (int) temporaryInstInsertQueue.size());
 }
 
 void
@@ -1069,10 +1167,13 @@ InstructionQueue::scheduleReadyInsts()
                 }
             }
 
+            std::string inst_str = "";
+            issuing_inst->dump(inst_str);
+
             DPRINTF(IQ, "Thread %i: Issuing instruction PC %s "
-                    "[sn:%llu]\n",
+                    "[sn:%llu] [%s]\n",
                     tid, issuing_inst->pcState(),
-                    issuing_inst->seqNum);
+                    issuing_inst->seqNum, inst_str);
 
             readyInsts[op_class].pop();
 
@@ -1251,7 +1352,14 @@ InstructionQueue::wakeDependents(const DynInstPtr &completed_inst)
             // so that it knows which of its source registers is
             // ready.  However that would mean that the dependency
             // graph entries would need to hold the src_reg_idx.
-            dep_inst->markSrcRegReady();
+
+            // dep_inst->markSrcRegReady();
+            for (int index = 0; index < dep_inst->numSrcRegs(); index++) {
+                if (dep_inst->renamedSrcIdx(index)->flatIndex() == dest_reg->flatIndex()) {
+                    dep_inst->markSrcRegReady(index);
+                    break;
+                }
+            }
 
             addIfReady(dep_inst);
 
@@ -1441,6 +1549,8 @@ InstructionQueue::doSquash(ThreadID tid)
                  !squashed_inst->isReadBarrier() &&
                  !squashed_inst->isWriteBarrier())) {
 
+                DPRINTF(IQ, "Seems like a normal instruction\n");
+
                 for (int src_reg_idx = 0;
                      src_reg_idx < squashed_inst->numSrcRegs();
                      src_reg_idx++)
@@ -1507,6 +1617,8 @@ InstructionQueue::doSquash(ThreadID tid)
             ++freeEntries;
         }
 
+        DPRINTF(IQ, "[tid:%i] cleaning up for [sn:%llu]\n", tid, squashed_inst->seqNum);
+
         // IQ clears out the heads of the dependency graph only when
         // instructions reach writeback stage. If an instruction is squashed
         // before writeback stage, its head of dependency graph would not be
@@ -1523,6 +1635,27 @@ InstructionQueue::doSquash(ThreadID tid)
             if (dest_reg->isFixedMapping()){
                 continue;
             }
+
+            if (!dependGraph.empty(dest_reg->flatIndex())) {
+                DPRINTF(IQ, "FAILING the test\n");
+
+                DependencyEntry<DynInstPtr> *depEntry = &dependGraph.dependGraph[dest_reg->flatIndex()];
+
+                // removing the instructions
+                while (NULL != depEntry) {
+                    DependencyEntry<DynInstPtr> *curEntry = depEntry;
+
+                    depEntry = curEntry->next;
+
+                    curEntry->inst = NULL;
+                    curEntry->next = NULL;
+                }
+
+                DPRINTF(IQ, "printing the dep graph\n");
+
+                printDepGraph(dependGraph);
+            }
+
             assert(dependGraph.empty(dest_reg->flatIndex()));
             dependGraph.clearInst(dest_reg->flatIndex());
         }
@@ -1541,6 +1674,9 @@ InstructionQueue::PqCompare::operator()(
 bool
 InstructionQueue::addToDependents(const DynInstPtr &new_inst)
 {
+    DPRINTF(IQ, "AddToDependents ain't the right way bruh");
+    assert(0);
+
     // Loop through the instruction's source registers, adding
     // them to the dependency list if they are not ready.
     int8_t total_src_regs = new_inst->numSrcRegs();
@@ -1626,6 +1762,8 @@ InstructionQueue::addIfReady(const DynInstPtr &inst)
     // If the instruction now has all of its source registers
     // available, then add it to the list of ready instructions.
     if (inst->readyToIssue()) {
+
+        DPRINTF(IQ, "Ritual on [sn:%llu]\n", inst->seqNum);
 
         //Add the instruction to the proper ready list.
         if (inst->isMemRef()) {
