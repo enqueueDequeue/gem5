@@ -813,7 +813,6 @@ InstructionQueue::finalizeInsertForCycle()
 
                 for (int index = 0; index < new_inst->numSrcRegs(); index++) {
                     if (new_inst->renamedSrcIdx(index)->flatIndex() == i) {
-                        // new_inst->markSrcRegReady(index);
                         reg_src_idx = index;
                         break;
                     }
@@ -846,15 +845,17 @@ InstructionQueue::finalizeInsertForCycle()
                                 new_inst->pcState(), src_reg->index(),
                                 src_reg->className(), new_inst->seqNum);
 
-                        // Mark a register ready within the instruction.
-                        new_inst->markSrcRegReady(reg_src_idx);
+                        // if the register is the source that's repeated twice
+                        // then it should be marked twice
 
-                        // for (int index = 0; index < new_inst->numSrcRegs(); index++) {
-                        //     if (new_inst->renamedSrcIdx(index)->flatIndex() == i) {
-                        //         new_inst->markSrcRegReady(index);
-                        //         break;
-                        //     }
-                        // }
+                        // Mark a register ready within the instruction.
+                        // new_inst->markSrcRegReady(reg_src_idx);
+
+                        for (int index = 0; index < new_inst->numSrcRegs(); index++) {
+                            if (new_inst->renamedSrcIdx(index)->flatIndex() == i) {
+                                new_inst->markSrcRegReady(index);
+                            }
+                        }
                     }
                     // change end
 
