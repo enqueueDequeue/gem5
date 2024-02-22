@@ -618,6 +618,8 @@ void printDepGraph(DependencyGraph<DynInstPtr> &depGraph) {
     // DPRINTF(IQ, "Truncating dep graph to 100 entries\n");
 }
 
+#include <unordered_map>
+
 LookupCache
 InstructionQueue::getDepGraphForInsts(std::list<DynInstPtr> instructions, int len) {
 
@@ -625,9 +627,12 @@ InstructionQueue::getDepGraphForInsts(std::list<DynInstPtr> instructions, int le
     std::vector<DynInstPtr> srcInstsInternal;
     DependencyGraph<DynInstPtr> dependGraphInternal;
 
+    std::unordered_map<std::string, int> pcCounter;
+
     regScoreboardInternal.resize(numPhysRegs);
     srcInstsInternal.resize(numPhysRegs);
     dependGraphInternal.resize(numPhysRegs);
+    dependGraphInternal.reset();
 
     for (int i = 0; i < numPhysRegs; ++i) {
         regScoreboard.push_back(true);
@@ -637,6 +642,16 @@ InstructionQueue::getDepGraphForInsts(std::list<DynInstPtr> instructions, int le
     int idx = 0;
 
     for (DynInstPtr &new_inst : instructions) {
+        int more = 0;
+        const PCStateBase &pc = new_inst->pcState();
+        const std::string key(std::to_string(pc.instAddr()) + ":" + std::to_string(pc.microPC()));
+
+        if (0 != pcCounter.count(key)) {
+            more = pcCounter[key];
+        }
+
+        pcCounter[key] = more + 1;
+
         if (len == idx) {
             break;
         }
@@ -666,7 +681,9 @@ InstructionQueue::getDepGraphForInsts(std::list<DynInstPtr> instructions, int le
                             new_inst->pcState(), src_reg->index(),
                             src_reg->className());
 
-                    dependGraphInternal.insert(src_reg->flatIndex(), new_inst);
+                    // insert more such that it counts the number of times the
+                    // instruction appeared
+                    dependGraphInternal.insert(src_reg->flatIndex(), new_inst, more);
                 }
             }
         }
@@ -721,16 +738,23 @@ InstructionQueue::getDepGraphForInsts(std::list<DynInstPtr> instructions, int le
     return LookupCache(regScoreboardInternal, srcInstsInternal, dependGraphInternal);
 }
 
-DynInstPtr findInstPtr(std::list<DynInstPtr> instructions, DynInstPtr refInst) {
+DynInstPtr findInstPtr(std::list<DynInstPtr> &instructions, DynInstPtr &refInst, int more) {
+    DynInstPtr foundInst = nullptr;
+
+    int currentCount = 0;
+
     for (DynInstPtr &instruction : instructions) {
-        // if (instruction->pcState().instAddr() == refInst->pcState().instAddr() &&
-        //     instruction->pcState().microPC() == refInst->pcState().microPC()) {
+        if (instruction->pcState() == refInst->pcState()) {
+            if (currentCount == more) {
+                return instruction;
+            }
+
+            currentCount++;
+        }
+
+        // if (instruction->seqNum == refInst->seqNum) {
         //     return instruction;
         // }
-
-        if (instruction->seqNum == refInst->seqNum) {
-            return instruction;
-        }
     }
 
     return nullptr;
@@ -745,8 +769,6 @@ PhysRegIdPtr findSrcPhysRegId(int idx, DynInstPtr inst) {
 
     return nullptr;
 }
-
-#include <unordered_set>
 
 void
 InstructionQueue::finalizeInsertForCycle()
@@ -775,10 +797,14 @@ InstructionQueue::finalizeInsertForCycle()
     // setting up the producers
     // this is usually done after the next for loop
     for (int i = 0; i < numPhysRegs; i++) {
-        if (newDepGraph.srcInsts[i] != invalid_inst) {
+        DependencyEntry<DynInstPtr> &entry = newDepGraph.depGraph.dependGraph[i];
+
+        if (entry.inst != NULL) {
+        // if (newDepGraph.srcInsts[i] != invalid_inst) {
             DPRINTF(IQ, "finding for %i\n", i);
 
-            DynInstPtr new_inst = findInstPtr(temporaryInstInsertQueue, newDepGraph.srcInsts[i]);
+            // DynInstPtr new_inst = findInstPtr(temporaryInstInsertQueue, newDepGraph.srcInsts[i], 0);
+            DynInstPtr new_inst = findInstPtr(temporaryInstInsertQueue, entry.inst, entry.more);
 
             assert(new_inst);
 
@@ -793,9 +819,6 @@ InstructionQueue::finalizeInsertForCycle()
 
     DPRINTF(IQ, "moving depGraph\n");
 
-    std::unordered_set<InstSeqNum> readiedInsts;
-    std::unordered_set<InstSeqNum> deppedInsts;
-
     // todo
     // NOTE
     // FIX: instructions are added to the dependency vector AND also the ready queue at the same time
@@ -806,7 +829,7 @@ InstructionQueue::finalizeInsertForCycle()
             DependencyEntry<DynInstPtr> *instEntry = entry.next;
 
             while (nullptr != instEntry) {
-                DynInstPtr new_inst = findInstPtr(temporaryInstInsertQueue, instEntry->inst);
+                DynInstPtr new_inst = findInstPtr(temporaryInstInsertQueue, instEntry->inst, instEntry->more);
                 assert(new_inst);
 
                 int reg_src_idx = -1;
