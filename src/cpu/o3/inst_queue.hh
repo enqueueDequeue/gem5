@@ -185,7 +185,8 @@ class InstructionQueue
     /** Inserts a new instruction into the IQ. */
     void insert(const DynInstPtr &new_inst);
 
-    LookupCache getDepGraphForInsts(std::list<DynInstPtr> instructions, int len);
+    LookupCache getDepGraphForInsts(std::list<DynInstPtr> &instructions, int len);
+    LookupCache getDepGraphFromDepGraph(std::list<DynInstPtr> &instructions, LookupCache &cache);
 
     void finalizeInsertForCycle();
 
