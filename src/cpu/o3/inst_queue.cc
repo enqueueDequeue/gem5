@@ -651,6 +651,8 @@ InstructionQueue::getDepGraphForInsts(std::list<DynInstPtr> &instructions, int l
         keyConcatenated = keyConcatenated + "," + key;
     }
 
+    DPRINTF(IQ, "searching for %s\n", keyConcatenated);
+
     if (len != 0) {
         if (0 != dependencyGraphCache.count(keyConcatenated)) {
             DPRINTF(IQ, "returning the existing dependency graph\n");
@@ -777,6 +779,8 @@ InstructionQueue::getDepGraphFromDepGraph(std::list<DynInstPtr> &instructions, L
     newDependGraphInternal.resize(numPhysRegs);
     newDependGraphInternal.reset();
 
+    DPRINTF(IQ, "depFromDep: Working on Producers\n");
+
     for (int index = 0; index < numPhysRegs; index++) {
         DependencyEntry<DynInstPtr> *instEntry = &cache.depGraph.dependGraph[index];
 
@@ -788,12 +792,14 @@ InstructionQueue::getDepGraphFromDepGraph(std::list<DynInstPtr> &instructions, L
 
             int target_index = actualInst->renamedDestIdx(0)->flatIndex();
 
-            DPRINTF(IQ, "depFromDep index: %i target_index: %i\n", index, target_index);
+            DPRINTF(IQ, "depFromDep: index: %i target_index: %i\n", index, target_index);
 
             // set the producers
             newDependGraphInternal.setInst(target_index, actualInst);
         }
     }
+
+    DPRINTF(IQ, "depFromDep: Working on Consumers\n");
 
     for (int index = 0; index < numPhysRegs; index++) {
         if (!cache.depGraph.empty(index)) {
@@ -802,12 +808,14 @@ InstructionQueue::getDepGraphFromDepGraph(std::list<DynInstPtr> &instructions, L
             // move to the consumers
             instEntry = instEntry->next;
 
-            // std::stack<DependencyEntry<DynInstPtr>> instStack;
-
             int target_index = -1;
 
             while (nullptr != instEntry) {
+                DPRINTF(IQ, "depFromDep: finding %s / %llu, %i\n", instEntry->inst->pcState(), instEntry->inst->pcState().instAddr(), instEntry->more);
+
                 DynInstPtr newInst = findInstPtr(instructions, instEntry->inst, instEntry->more);
+
+                assert (NULL != newInst);
 
                 for (int t = 0; t < instEntry->inst->numSrcs(); t++) {
                     if (index == instEntry->inst->renamedSrcIdx(t)->flatIndex()) {
@@ -837,46 +845,9 @@ InstructionQueue::getDepGraphFromDepGraph(std::list<DynInstPtr> &instructions, L
                 entry.more = instEntry->more;
 
                 newDependGraphInternal.insert(target_index, entry.inst, entry.more);
-                // instStack.push(entry);
 
                 instEntry = instEntry->next;
             }
-
-            // while (!instStack.empty()) {
-            //     DependencyEntry<DynInstPtr> entry = instStack.top();
-
-            //     newDependGraphInternal.insert(target_index, entry.inst, entry.more);
-
-            //     instStack.pop();
-            // }
-        }
-    }
-
-    for (int index = 0; index < numPhysRegs; index++) {
-        DependencyEntry<DynInstPtr> *cacheInstEntry = &cache.depGraph.dependGraph[index];
-        DependencyEntry<DynInstPtr> *actInstEntry = &newDependGraphInternal.dependGraph[index];
-
-        int internalIndex = 0;
-
-        while ((nullptr != cacheInstEntry && NULL != cacheInstEntry->inst)
-                || (nullptr != actInstEntry && NULL != actInstEntry->inst)) {
-
-            std::string cacheInst;
-            std::string actInst;
-
-            cacheInstEntry->inst->dump(cacheInst);
-            actInstEntry->inst->dump(actInst);
-
-            DPRINTF(IQ, "depFromDep reg: %i -> %i cacheInstEntry: %s (%s), actInstEntry: %s (%s)\n",
-                        index, internalIndex,
-                        cacheInstEntry->inst->pcState(), cacheInst,
-                        actInstEntry->inst->pcState(), actInst);
-
-            // assert (cacheInstEntry->inst->pcState() == actInstEntry->inst->pcState());
-
-            cacheInstEntry = cacheInstEntry->next;
-            actInstEntry = actInstEntry->next;
-            internalIndex += 1;
         }
     }
 
@@ -889,7 +860,8 @@ DynInstPtr findInstPtr(std::list<DynInstPtr> &instructions, DynInstPtr &refInst,
     int currentCount = 0;
 
     for (DynInstPtr &instruction : instructions) {
-        if (instruction->pcState() == refInst->pcState()) {
+        if (instruction->pcState().instAddr() == refInst->pcState().instAddr() &&
+            instruction->pcState().microPC() == refInst->pcState().microPC()) {
             if (currentCount == more) {
                 return instruction;
             }
