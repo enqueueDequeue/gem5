@@ -70,8 +70,21 @@ public:
   std::vector<bool> regScoreBoard;
   DependencyGraph<DynInstPtr> depGraph;
 
+  LookupCache() {}
+
   LookupCache(std::vector<bool> regScoreBoard,
               DependencyGraph<DynInstPtr> depGraph): regScoreBoard(regScoreBoard), depGraph(depGraph) {}
+
+  LookupCache(const LookupCache &other): regScoreBoard(other.regScoreBoard), depGraph(other.depGraph) {}
+
+  LookupCache(LookupCache &&other): regScoreBoard(std::move(other.regScoreBoard)), depGraph(std::move(other.depGraph)) {}
+
+  LookupCache &operator=(const LookupCache &other) {
+    this->regScoreBoard = other.regScoreBoard;
+    this->depGraph = other.depGraph;
+
+    return *this;
+  }
 };
 
 InstructionQueue::FUCompletion::FUCompletion(const DynInstPtr &_inst,
@@ -620,8 +633,30 @@ void printDepGraph(DependencyGraph<DynInstPtr> &depGraph) {
 
 DynInstPtr findInstPtr(std::list<DynInstPtr> &instructions, DynInstPtr &refInst, int more);
 
-LookupCache
+LookupCache &
 InstructionQueue::getDepGraphForInsts(std::list<DynInstPtr> &instructions, int len) {
+    int idx = 0;
+    std::string keyConcatenated;
+
+    for (DynInstPtr &new_inst : instructions) {
+        if (len == idx) {
+            break;
+        }
+
+        idx++;
+
+        const PCStateBase &pc = new_inst->pcState();
+        const std::string key(std::to_string(pc.instAddr()) + ":" + std::to_string(pc.microPC()));
+
+        keyConcatenated = keyConcatenated + "," + key;
+    }
+
+    if (len != 0) {
+        if (0 != dependencyGraphCache.count(keyConcatenated)) {
+            // DPRINTF(IQ, "returning the existing dependency graph\n");
+            // return dependencyGraphCache[keyConcatenated];
+        }
+    }
 
     std::vector<bool> regScoreboardInternal;
     DependencyGraph<DynInstPtr> dependGraphInternal;
@@ -636,7 +671,7 @@ InstructionQueue::getDepGraphForInsts(std::list<DynInstPtr> &instructions, int l
         regScoreboard.push_back(true);
     }
 
-    int idx = 0;
+    idx = 0;
 
     for (DynInstPtr &new_inst : instructions) {
         int more = 0;
@@ -728,7 +763,11 @@ InstructionQueue::getDepGraphForInsts(std::list<DynInstPtr> &instructions, int l
         DPRINTF(IQ, "not printing the graph, size = 0\n");
     }
 
-    return LookupCache(regScoreboardInternal, dependGraphInternal);
+    DPRINTF(IQ, "Assigning new Lookup Cache\n");
+
+    dependencyGraphCache.insert_or_assign(keyConcatenated, LookupCache(regScoreboardInternal, dependGraphInternal));
+
+    return dependencyGraphCache[keyConcatenated];
 }
 
 LookupCache
@@ -753,20 +792,85 @@ InstructionQueue::getDepGraphFromDepGraph(std::list<DynInstPtr> &instructions, L
 
             // set the producers
             newDependGraphInternal.setInst(target_index, actualInst);
+        }
+    }
+
+    for (int index = 0; index < numPhysRegs; index++) {
+        if (!cache.depGraph.empty(index)) {
+            DependencyEntry<DynInstPtr> *instEntry = &cache.depGraph.dependGraph[index];
 
             // move to the consumers
             instEntry = instEntry->next;
 
-            while (nullptr != instEntry) {
-                DPRINTF(IQ, "depFromDep instEntry: %p\n", instEntry);
+            std::stack<DependencyEntry<DynInstPtr>> instStack;
 
+            int target_index = -1;
+
+            while (nullptr != instEntry) {
                 DynInstPtr newInst = findInstPtr(instructions, instEntry->inst, instEntry->more);
 
+                for (int t = 0; t < instEntry->inst->numSrcs(); t++) {
+                    if (index == instEntry->inst->renamedSrcIdx(t)->flatIndex()) {
+                        int tmp = newInst->renamedSrcIdx(t)->flatIndex();
+
+                        if ((-1 == target_index) || (target_index == tmp)) {
+                            // all ok
+                        } else {
+                            DPRINTF(IQ, "target_index: %i, tmp: %i\n", target_index, tmp);
+                            assert (false);
+                        }
+                        target_index = tmp;
+                    }
+                }
+
+                assert(-1 != target_index);
+
+                DPRINTF(IQ, "depFromDep instEntry: %s, newEntry: %s, target: %i\n", instEntry->inst->pcState(), newInst->pcState(), target_index);
+
                 // create the new dep graph
-                newDependGraphInternal.insert(target_index, newInst);
+                DependencyEntry<DynInstPtr> entry;
+
+                entry.inst = newInst;
+                entry.more = instEntry->more;
+
+                newDependGraphInternal.insert(target_index, entry.inst, entry.more);
+                // instStack.push(entry);
 
                 instEntry = instEntry->next;
             }
+
+            // while (!instStack.empty()) {
+            //     DependencyEntry<DynInstPtr> entry = instStack.top();
+
+            //     newDependGraphInternal.insert(target_index, entry.inst, entry.more);
+
+            //     instStack.pop();
+            // }
+        }
+    }
+
+    for (int index = 0; index < numPhysRegs; index++) {
+        DependencyEntry<DynInstPtr> *cacheInstEntry = &cache.depGraph.dependGraph[index];
+        DependencyEntry<DynInstPtr> *actInstEntry = &newDependGraphInternal.dependGraph[index];
+
+        int internalIndex = 0;
+
+        while ((nullptr != cacheInstEntry && NULL != cacheInstEntry->inst)
+                || (nullptr != actInstEntry && NULL != actInstEntry->inst)) {
+
+            std::string cacheInst;
+            std::string actInst;
+
+            cacheInstEntry->inst->dump(cacheInst);
+            actInstEntry->inst->dump(actInst);
+
+            DPRINTF(IQ, "depFromDep reg: %i -> %i cacheInstEntry: %s (%s), actInstEntry: %s (%s)\n", index, internalIndex, cacheInstEntry->inst->pcState(), cacheInst, actInstEntry->inst->pcState(), actInst);
+
+            // assert (cacheInstEntry->inst->pcState() == actInstEntry->inst->pcState());
+
+            cacheInstEntry = cacheInstEntry->next;
+            actInstEntry = actInstEntry->next;
+            internalIndex += 1;
         }
     }
 
@@ -819,9 +923,9 @@ InstructionQueue::finalizeInsertForCycle()
     DPRINTF(IQ, "finalize begin, queue size: %i\n", (int) temporaryInstInsertQueue.size());
 
     int queueableInstructionsSize = temporaryInstInsertQueue.size(); // std::min((unsigned) temporaryInstInsertQueue.size(), freeEntries);
-    LookupCache cacheDepGraph = getDepGraphForInsts(temporaryInstInsertQueue, queueableInstructionsSize);
-    // LookupCache newDepGraph = getDepGraphFromDepGraph(temporaryInstInsertQueue, cacheDepGraph);
-    LookupCache newDepGraph = cacheDepGraph;
+    LookupCache &cacheDepGraph = getDepGraphForInsts(temporaryInstInsertQueue, queueableInstructionsSize);
+    LookupCache newDepGraph = getDepGraphFromDepGraph(temporaryInstInsertQueue, cacheDepGraph);
+    // LookupCache newDepGraph = cacheDepGraph;
 
     for (const auto &new_inst : temporaryInstInsertQueue) {
         instList[new_inst->threadNumber].push_back(new_inst);
@@ -950,7 +1054,8 @@ InstructionQueue::finalizeInsertForCycle()
     DPRINTF(IQ, "almost done\n");
 
     if (0 != queueableInstructionsSize) {
-        printDepGraph(dependGraph);
+        DPRINTF(IQ, "not printing the actual dep graph\n");
+        // printDepGraph(dependGraph);
     } else {
         DPRINTF(IQ, "not printing the actual dep graph\n");
     }
