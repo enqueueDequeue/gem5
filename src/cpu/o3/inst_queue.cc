@@ -653,8 +653,8 @@ InstructionQueue::getDepGraphForInsts(std::list<DynInstPtr> &instructions, int l
 
     if (len != 0) {
         if (0 != dependencyGraphCache.count(keyConcatenated)) {
-            // DPRINTF(IQ, "returning the existing dependency graph\n");
-            // return dependencyGraphCache[keyConcatenated];
+            DPRINTF(IQ, "returning the existing dependency graph\n");
+            return dependencyGraphCache[keyConcatenated];
         }
     }
 
@@ -802,7 +802,7 @@ InstructionQueue::getDepGraphFromDepGraph(std::list<DynInstPtr> &instructions, L
             // move to the consumers
             instEntry = instEntry->next;
 
-            std::stack<DependencyEntry<DynInstPtr>> instStack;
+            // std::stack<DependencyEntry<DynInstPtr>> instStack;
 
             int target_index = -1;
 
@@ -825,7 +825,10 @@ InstructionQueue::getDepGraphFromDepGraph(std::list<DynInstPtr> &instructions, L
 
                 assert(-1 != target_index);
 
-                DPRINTF(IQ, "depFromDep instEntry: %s, newEntry: %s, target: %i\n", instEntry->inst->pcState(), newInst->pcState(), target_index);
+                DPRINTF(IQ, "depFromDep instEntry: %llu (%s), newEntry: %llu (%s), phyReg: %i, targetPhyReg: %i\n",
+                            instEntry->inst->seqNum, instEntry->inst->pcState(),
+                            newInst->seqNum, newInst->pcState(),
+                            index, target_index);
 
                 // create the new dep graph
                 DependencyEntry<DynInstPtr> entry;
@@ -864,7 +867,10 @@ InstructionQueue::getDepGraphFromDepGraph(std::list<DynInstPtr> &instructions, L
             cacheInstEntry->inst->dump(cacheInst);
             actInstEntry->inst->dump(actInst);
 
-            DPRINTF(IQ, "depFromDep reg: %i -> %i cacheInstEntry: %s (%s), actInstEntry: %s (%s)\n", index, internalIndex, cacheInstEntry->inst->pcState(), cacheInst, actInstEntry->inst->pcState(), actInst);
+            DPRINTF(IQ, "depFromDep reg: %i -> %i cacheInstEntry: %s (%s), actInstEntry: %s (%s)\n",
+                        index, internalIndex,
+                        cacheInstEntry->inst->pcState(), cacheInst,
+                        actInstEntry->inst->pcState(), actInst);
 
             // assert (cacheInstEntry->inst->pcState() == actInstEntry->inst->pcState());
 
