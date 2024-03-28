@@ -119,7 +119,7 @@ InstructionQueue::InstructionQueue(CPU *cpu_ptr, IEW *iew_ptr,
       totalWidth(params.issueWidth),
       commitToIEWDelay(params.commitToIEWDelay),
       iqStats(cpu, totalWidth),
-      iqIOStats(cpu)
+      iqIOStats(cpu, totalWidth)
 {
     assert(fuPool);
 
@@ -349,7 +349,7 @@ InstructionQueue::IQStats::IQStats(CPU *cpu, const unsigned &total_width)
     fuBusyRate = fuBusy / instsIssued;
 }
 
-InstructionQueue::IQIOStats::IQIOStats(statistics::Group *parent)
+InstructionQueue::IQIOStats::IQIOStats(statistics::Group *parent, const unsigned total_width)
     : statistics::Group(parent),
     ADD_STAT(intInstQueueReads, statistics::units::Count::get(),
              "Number of integer instruction queue reads"),
@@ -374,7 +374,13 @@ InstructionQueue::IQIOStats::IQIOStats(statistics::Group *parent)
     ADD_STAT(fpAluAccesses, statistics::units::Count::get(),
              "Number of floating point alu accesses"),
     ADD_STAT(vecAluAccesses, statistics::units::Count::get(),
-             "Number of vector alu accesses")
+             "Number of vector alu accesses"),
+    ADD_STAT(chainsOfLength, statistics::units::Count::get(),
+             "How many chains of a given length"),
+    ADD_STAT(chainReuse, statistics::units::Count::get(),
+             "Number of times each chain of the given length is reused"),
+    ADD_STAT(numChains, statistics::units::Count::get(),
+             "Number of Chains in the cache")
 {
     using namespace statistics;
     intInstQueueReads
@@ -412,6 +418,18 @@ InstructionQueue::IQIOStats::IQIOStats(statistics::Group *parent)
 
     vecAluAccesses
         .flags(total);
+
+    chainsOfLength
+        .init(total_width + 1)
+        .flags(total);
+
+    chainReuse
+        .init(total_width + 1)
+        .flags(pdf | dist);
+
+    for (int i = 0; i <= total_width; i++) {
+        chainReuse.subname(i, "reuse_" + std::to_string(i));
+    }
 }
 
 void
@@ -655,6 +673,10 @@ InstructionQueue::getDepGraphForInsts(std::list<DynInstPtr> &instructions, int l
 
     if (len != 0) {
         if (0 != dependencyGraphCache.count(keyConcatenated)) {
+            // update the usage thingy
+
+            iqIOStats.chainReuse[len]++;
+
             DPRINTF(IQ, "returning the existing dependency graph\n");
             return dependencyGraphCache[keyConcatenated];
         }
@@ -768,6 +790,9 @@ InstructionQueue::getDepGraphForInsts(std::list<DynInstPtr> &instructions, int l
     DPRINTF(IQ, "Assigning new Lookup Cache\n");
 
     dependencyGraphCache.insert_or_assign(keyConcatenated, LookupCache(regScoreboardInternal, dependGraphInternal));
+
+    iqIOStats.chainsOfLength[len]++;
+    iqIOStats.numChains = dependencyGraphCache.size();
 
     return dependencyGraphCache[keyConcatenated];
 }

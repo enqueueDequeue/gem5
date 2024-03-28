@@ -558,7 +558,7 @@ class InstructionQueue
    public:
     struct IQIOStats : public statistics::Group
     {
-        IQIOStats(statistics::Group *parent);
+        IQIOStats(statistics::Group *parent, const unsigned total_width);
         statistics::Scalar intInstQueueReads;
         statistics::Scalar intInstQueueWrites;
         statistics::Scalar intInstQueueWakeupAccesses;
@@ -572,6 +572,10 @@ class InstructionQueue
         statistics::Scalar intAluAccesses;
         statistics::Scalar fpAluAccesses;
         statistics::Scalar vecAluAccesses;
+
+        statistics::Vector chainsOfLength;
+        statistics::Vector chainReuse;
+        statistics::Scalar numChains;
     } iqIOStats;
 };
 
