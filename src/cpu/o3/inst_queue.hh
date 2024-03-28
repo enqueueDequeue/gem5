@@ -44,6 +44,7 @@
 
 #include <list>
 #include <map>
+#include <unordered_map>
 #include <queue>
 #include <vector>
 
@@ -185,7 +186,8 @@ class InstructionQueue
     /** Inserts a new instruction into the IQ. */
     void insert(const DynInstPtr &new_inst);
 
-    LookupCache getDepGraphForInsts(std::list<DynInstPtr> instructions, int len);
+    LookupCache &getDepGraphForInsts(std::list<DynInstPtr> &instructions, int len);
+    LookupCache getDepGraphFromDepGraph(std::list<DynInstPtr> &instructions, LookupCache &cache);
 
     void finalizeInsertForCycle();
 
@@ -344,7 +346,7 @@ class InstructionQueue
     std::list<DynInstPtr> temporaryInstInsertQueue;
 
     // todo: change the vector<long> to pc
-    std::map<std::vector<long>, LookupCache> dependencyGraphCache;
+    std::unordered_map<std::string, LookupCache> dependencyGraphCache;
 
     /**
      * Struct for comparing entries to be added to the priority queue.
@@ -556,7 +558,7 @@ class InstructionQueue
    public:
     struct IQIOStats : public statistics::Group
     {
-        IQIOStats(statistics::Group *parent);
+        IQIOStats(statistics::Group *parent, const unsigned total_width);
         statistics::Scalar intInstQueueReads;
         statistics::Scalar intInstQueueWrites;
         statistics::Scalar intInstQueueWakeupAccesses;
@@ -570,6 +572,10 @@ class InstructionQueue
         statistics::Scalar intAluAccesses;
         statistics::Scalar fpAluAccesses;
         statistics::Scalar vecAluAccesses;
+
+        statistics::Vector chainsOfLength;
+        statistics::Vector chainReuse;
+        statistics::Scalar numChains;
     } iqIOStats;
 };
 
