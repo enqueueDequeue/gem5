@@ -63,6 +63,31 @@ namespace gem5
 namespace o3
 {
 
+std::string format_inst(const DynInstPtr& inst)
+{
+    std::string inst_contents = "inst: ";
+
+    inst->dump(inst_contents);
+
+    inst_contents += ": regs: (";
+
+    for (int reg_idx = 0; reg_idx < inst->numDestRegs(); reg_idx++) {
+        inst_contents += std::to_string(inst->renamedDestIdx(reg_idx)->flatIndex());
+        inst_contents += " ";
+    }
+
+    inst_contents += ") <- (";
+
+    for (int reg_idx = 0; reg_idx < inst->numSrcRegs(); reg_idx++) {
+        inst_contents += std::to_string(inst->renamedSrcIdx(reg_idx)->flatIndex());
+        inst_contents += " ";
+    }
+
+    inst_contents += ")";
+
+    return inst_contents;
+}
+
 InstructionQueue::FUCompletion::FUCompletion(const DynInstPtr &_inst,
     int fu_idx, InstructionQueue *iq_ptr)
     : Event(Stat_Event_Pri, AutoDelete),
@@ -113,7 +138,9 @@ InstructionQueue::InstructionQueue(CPU *cpu_ptr, IEW *iew_ptr,
 
     //Create an entry for each physical register within the
     //dependency graph.
-    dependGraph.resize(numPhysRegs);
+    // todo: pass the numReservationStations
+    dependGraph.resize(numPhysRegs, numEntries);
+    // dependGraph.resize(numPhysRegs);
 
     // Resize the register scoreboard.
     regScoreboard.resize(numPhysRegs);
@@ -575,6 +602,8 @@ InstructionQueue::insert(const DynInstPtr &new_inst)
     DPRINTF(IQ, "Adding instruction [sn:%llu] PC %s to the IQ.\n",
             new_inst->seqNum, new_inst->pcState());
 
+    DPRINTF(IQ, "Inserting: %s\n", format_inst(new_inst));
+
     assert(freeEntries != 0);
 
     instList[new_inst->threadNumber].push_back(new_inst);
@@ -888,6 +917,7 @@ InstructionQueue::scheduleReadyInsts()
             if (!issuing_inst->isMemRef()) {
                 // Memory instructions can not be freed from the IQ until they
                 // complete.
+                dependGraph.retract(issuing_inst);
                 ++freeEntries;
                 count[tid]--;
                 issuing_inst->clearInIQ();
@@ -1060,6 +1090,9 @@ InstructionQueue::wakeDependents(const DynInstPtr &completed_inst)
         // Mark the scoreboard as having that register ready.
         regScoreboard[dest_reg->flatIndex()] = true;
     }
+
+    dependGraph.retract(completed_inst);
+
     return dependents;
 }
 
@@ -1251,6 +1284,9 @@ InstructionQueue::doSquash(ThreadID tid)
 
                     if (!squashed_inst->readySrcIdx(src_reg_idx) &&
                         !src_reg->isFixedMapping()) {
+                        DPRINTF(IQ, "removing [sn:%llu]@[%i] from dependencyGraph\n",
+                                squashed_inst->seqNum, src_reg->flatIndex());
+
                         dependGraph.remove(src_reg->flatIndex(),
                                            squashed_inst);
                     }
@@ -1318,6 +1354,8 @@ InstructionQueue::doSquash(ThreadID tid)
             assert(dependGraph.empty(dest_reg->flatIndex()));
             dependGraph.clearInst(dest_reg->flatIndex());
         }
+
+        dependGraph.retract(squashed_inst);
         instList[tid].erase(squash_it--);
         ++iqStats.squashedInstsExamined;
     }

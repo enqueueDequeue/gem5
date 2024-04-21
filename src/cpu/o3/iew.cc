@@ -546,7 +546,7 @@ IEW::instToCommit(const DynInstPtr& inst)
         }
     }
 
-    DPRINTF(IEW, "Current wb cycle: %i, width: %i, numInst: %i\nwbActual:%i\n",
+    DPRINTF(IEW, "Current wb cycle: %i, width: %i, numInst: %i wbActual:%i\n",
             wbCycle, wbWidth, wbNumInst, wbCycle * wbWidth + wbNumInst);
     // Add finished instruction to queue to commit.
     (*iewQueue)[wbCycle].insts[wbNumInst] = inst;
@@ -849,6 +849,8 @@ IEW::dispatchInsts(ThreadID tid)
     DynInstPtr inst;
     bool add_to_iq = false;
     int dis_num_inst = 0;
+
+    DPRINTF(IEW, "[tid:%i] Issue: insts_to_add: %i, dispatchWidth: %i\n", tid, insts_to_add, dispatchWidth);
 
     // Loop through the instructions, putting them in the instruction
     // queue.
