@@ -73,6 +73,9 @@ std::string format_inst(const DynInstPtr& inst)
 
     for (int reg_idx = 0; reg_idx < inst->numDestRegs(); reg_idx++) {
         inst_contents += std::to_string(inst->renamedDestIdx(reg_idx)->flatIndex());
+        inst_contents += "[";
+        inst_contents += std::to_string(inst->destRegIdx(reg_idx).index());
+        inst_contents += "]";
         inst_contents += " ";
     }
 
@@ -80,6 +83,9 @@ std::string format_inst(const DynInstPtr& inst)
 
     for (int reg_idx = 0; reg_idx < inst->numSrcRegs(); reg_idx++) {
         inst_contents += std::to_string(inst->renamedSrcIdx(reg_idx)->flatIndex());
+        inst_contents += "[";
+        inst_contents += std::to_string(inst->srcRegIdx(reg_idx).index());
+        inst_contents += "]";
         inst_contents += " ";
     }
 
@@ -183,10 +189,25 @@ InstructionQueue::InstructionQueue(CPU *cpu_ptr, IEW *iew_ptr,
 
         DPRINTF(IQ, "IQ sharing policy set to Threshold:"
                 "%i entries per thread.\n",thresholdIQ);
-   }
+    }
+
     for (ThreadID tid = numThreads; tid < MaxThreads; tid++) {
         maxEntries[tid] = 0;
     }
+
+    int numArchRegs = 0;
+
+    for (int i = 0; i <= CCRegClass; i++) {
+        numArchRegs += cpu->params().isa[0]->regClasses().at(i)->numRegs();
+    }
+
+    for (int i = 0; i < numArchRegs; i++) {
+        regLengthSums.push_back(0);
+        regLengthCounts.push_back(0);
+        regTrace.emplace_back(0, 0);
+    }
+
+    DPRINTF(IQ, "numArchRegs: %d\n", numArchRegs);
 }
 
 InstructionQueue::~InstructionQueue()
@@ -234,6 +255,8 @@ InstructionQueue::IQStats::IQStats(CPU *cpu, const unsigned &total_width)
              "Number of squashed non-spec instructions that were removed"),
     ADD_STAT(numIssuedDist, statistics::units::Count::get(),
              "Number of insts issued each cycle"),
+    ADD_STAT(averageReuseChainLength, statistics::units::Count::get(),
+             "Number of instructions that use a register"),
     ADD_STAT(statFuBusy, statistics::units::Count::get(),
              "attempts to use FU when none available"),
     ADD_STAT(statIssuedInstType, statistics::units::Count::get(),
@@ -340,6 +363,14 @@ InstructionQueue::IQStats::IQStats(CPU *cpu, const unsigned &total_width)
     for (int i=0; i < Num_OpClasses; ++i) {
         statFuBusy.subname(i, enums::OpClassStrings[i]);
     }
+
+    int numArchRegs = 0;
+
+    for (int i = 0; i <= CCRegClass; i++) {
+        numArchRegs += cpu->params().isa[0]->regClasses().at(i)->numRegs();
+    }
+
+    averageReuseChainLength.init(numArchRegs);
 
     fuBusy
         .init(cpu->numThreads)
@@ -587,8 +618,34 @@ InstructionQueue::hasReadyInsts()
 }
 
 void
+InstructionQueue::logInsert(const DynInstPtr &inst)
+{
+    for (size_t regIdx = 0; regIdx < inst->numDestRegs(); regIdx++) {
+        RegIndex destRegIdx = inst->destRegIdx(regIdx).index();
+
+        regLengthSums[destRegIdx] += regTrace[destRegIdx].diff();
+        regLengthCounts[destRegIdx] += 1;
+        regTrace[destRegIdx] = RegTrace(inst->seqNum, inst->seqNum);
+
+        // update the stats
+        iqStats.averageReuseChainLength[destRegIdx] = regLengthSums[destRegIdx] / regLengthCounts[destRegIdx];
+
+        std::string inst_str = format_inst(inst);
+
+        DPRINTF(IQ, "inst: %s, dest_reg: %i, regLengthSums: %d, regLengthCounts: %d\n", inst_str, destRegIdx, regLengthSums[destRegIdx], regLengthCounts[destRegIdx]);
+    }
+
+    for (size_t regIdx = 0; regIdx < inst->numSrcRegs(); regIdx++) {
+        RegTrace &trace = regTrace[inst->srcRegIdx(regIdx).index()];
+        trace.end = inst->seqNum;
+    }
+}
+
+void
 InstructionQueue::insert(const DynInstPtr &new_inst)
 {
+    logInsert(new_inst);
+
     if (new_inst->isFloating()) {
         iqIOStats.fpInstQueueWrites++;
     } else if (new_inst->isVector()) {
@@ -636,6 +693,8 @@ InstructionQueue::insert(const DynInstPtr &new_inst)
 void
 InstructionQueue::insertNonSpec(const DynInstPtr &new_inst)
 {
+    logInsert(new_inst);
+
     // @todo: Clean up this code; can do it by setting inst as unable
     // to issue, then calling normal insert on the inst.
     if (new_inst->isFloating()) {

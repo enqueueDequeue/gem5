@@ -79,6 +79,18 @@ class FUPool;
 class CPU;
 class IEW;
 
+class RegTrace {
+  public:
+    InstSeqNum start;
+    InstSeqNum end;
+
+    RegTrace(InstSeqNum start, InstSeqNum end): start(start), end(end) {}
+
+    uint64_t diff() {
+        return this->end - this->start;
+    }
+};
+
 /**
  * A standard instruction queue class.  It holds ready instructions, in
  * order, in seperate priority queues to facilitate the scheduling of
@@ -447,6 +459,14 @@ class InstructionQueue
     /** The sequence number of the squashed instruction. */
     InstSeqNum squashedSeqNum[MaxThreads];
 
+    // todo: replace these
+    // NOTE: can create a new metric that is only
+    // difference of physical source register's absolute sum
+    // accounting for circular-ness.
+    std::vector<int> regLengthSums;
+    std::vector<int> regLengthCounts;
+    std::vector<RegTrace> regTrace;
+
     /** A cache of the recently woken registers.  It is 1 if the register
      *  has been woken up recently, and 0 if the register has been added
      *  to the dependency graph and has not yet received its value.  It
@@ -454,6 +474,8 @@ class InstructionQueue
      *  the scoreboard that exists in the rename map.
      */
     std::vector<bool> regScoreboard;
+
+    void logInsert(const DynInstPtr &inst);
 
     /** Adds an instruction to the dependency graph, as a consumer. */
     bool addToDependents(const DynInstPtr &new_inst);
@@ -526,6 +548,8 @@ class InstructionQueue
          * @todo: Need to create struct to track the ready time for each
          * instruction. */
         // statistics::VectorDistribution issueDelayDist;
+
+        statistics::Vector averageReuseChainLength;
 
         /** Number of times an instruction could not be issued because a
          * FU was busy.
