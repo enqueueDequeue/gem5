@@ -125,7 +125,7 @@ InstructionQueue::InstructionQueue(CPU *cpu_ptr, IEW *iew_ptr,
       numEntries(params.numIQEntries),
       totalWidth(params.issueWidth),
       commitToIEWDelay(params.commitToIEWDelay),
-      iqStats(cpu, totalWidth),
+      iqStats(cpu, totalWidth, params),
       iqIOStats(cpu)
 {
     assert(fuPool);
@@ -201,12 +201,6 @@ InstructionQueue::InstructionQueue(CPU *cpu_ptr, IEW *iew_ptr,
         numArchRegs += cpu->params().isa[0]->regClasses().at(i)->numRegs();
     }
 
-    for (int i = 0; i < numArchRegs; i++) {
-        regLengthSums.push_back(0);
-        regLengthCounts.push_back(0);
-        regTrace.emplace_back(0, 0);
-    }
-
     DPRINTF(IQ, "numArchRegs: %d\n", numArchRegs);
 }
 
@@ -225,7 +219,7 @@ InstructionQueue::name() const
     return cpu->name() + ".iq";
 }
 
-InstructionQueue::IQStats::IQStats(CPU *cpu, const unsigned &total_width)
+InstructionQueue::IQStats::IQStats(CPU *cpu, const unsigned &total_width, const BaseO3CPUParams &params)
     : statistics::Group(cpu),
     ADD_STAT(instsAdded, statistics::units::Count::get(),
              "Number of instructions added to the IQ (excludes non-spec)"),
@@ -255,8 +249,8 @@ InstructionQueue::IQStats::IQStats(CPU *cpu, const unsigned &total_width)
              "Number of squashed non-spec instructions that were removed"),
     ADD_STAT(numIssuedDist, statistics::units::Count::get(),
              "Number of insts issued each cycle"),
-    ADD_STAT(averageReuseChainLength, statistics::units::Count::get(),
-             "Number of instructions that use a register"),
+    ADD_STAT(phyRegsDistance, statistics::units::Count::get(),
+             "Distance between the max(rs) and min(rs)"),
     ADD_STAT(statFuBusy, statistics::units::Count::get(),
              "attempts to use FU when none available"),
     ADD_STAT(statIssuedInstType, statistics::units::Count::get(),
@@ -364,13 +358,23 @@ InstructionQueue::IQStats::IQStats(CPU *cpu, const unsigned &total_width)
         statFuBusy.subname(i, enums::OpClassStrings[i]);
     }
 
-    int numArchRegs = 0;
+    unsigned numPhysRegs = 0;
+    const auto &reg_classes = params.isa[0]->regClasses();
 
-    for (int i = 0; i <= CCRegClass; i++) {
-        numArchRegs += cpu->params().isa[0]->regClasses().at(i)->numRegs();
-    }
+    numPhysRegs = params.numPhysIntRegs + params.numPhysFloatRegs +
+                    params.numPhysVecRegs +
+                    params.numPhysVecRegs * (
+                            reg_classes.at(VecElemClass)->numRegs() /
+                            reg_classes.at(VecRegClass)->numRegs()) +
+                    params.numPhysVecPredRegs +
+                    params.numPhysMatRegs +
+                    params.numPhysCCRegs;
 
-    averageReuseChainLength.init(numArchRegs);
+    printf(">>>>>>>>>>>>>>>>>>>>>>> numPhyRegs: %u\n", numPhysRegs);
+
+    phyRegsDistance
+        .init(numPhysRegs)
+        .flags(statistics::total | statistics::pdf | statistics::dist);
 
     fuBusy
         .init(cpu->numThreads)
@@ -620,25 +624,39 @@ InstructionQueue::hasReadyInsts()
 void
 InstructionQueue::logInsert(const DynInstPtr &inst)
 {
-    for (size_t regIdx = 0; regIdx < inst->numDestRegs(); regIdx++) {
-        RegIndex destRegIdx = inst->destRegIdx(regIdx).index();
 
-        regLengthSums[destRegIdx] += regTrace[destRegIdx].diff();
-        regLengthCounts[destRegIdx] += 1;
-        regTrace[destRegIdx] = RegTrace(inst->seqNum, inst->seqNum);
-
-        // update the stats
-        iqStats.averageReuseChainLength[destRegIdx] = regLengthSums[destRegIdx] / regLengthCounts[destRegIdx];
-
-        std::string inst_str = format_inst(inst);
-
-        DPRINTF(IQ, "inst: %s, dest_reg: %i, regLengthSums: %d, regLengthCounts: %d\n", inst_str, destRegIdx, regLengthSums[destRegIdx], regLengthCounts[destRegIdx]);
+    if (0 == inst->numSrcRegs()) {
+        return;
     }
+
+    bool valid = false;
+    RegIndex min = UINT16_MAX;
+    RegIndex max = 0;
 
     for (size_t regIdx = 0; regIdx < inst->numSrcRegs(); regIdx++) {
-        RegTrace &trace = regTrace[inst->srcRegIdx(regIdx).index()];
-        trace.end = inst->seqNum;
+        RegIndex destRegIdx = inst->renamedSrcIdx(regIdx)->index();
+
+        // special case for reg 0
+        if (destRegIdx == 65535) {
+            continue;
+        }
+
+        valid = true;
+        min = std::min(destRegIdx, min);
+        max = std::max(destRegIdx, max);
     }
+
+    DPRINTF(IQ, "logging: %s, valid: %d\n", format_inst(inst), valid);
+
+    if (!valid) {
+        return;
+    }
+
+    RegIndex distance = std::min(max - min, ((RegIndex) numPhysRegs) - max + min);
+
+    DPRINTF(IQ, "distance: %u, max: %u, min: %u\n", distance, max, min);
+
+    iqStats.phyRegsDistance[distance]++;
 }
 
 void
