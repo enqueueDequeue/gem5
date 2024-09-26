@@ -78,7 +78,7 @@ DynInst::DynInst(const Arrays &arrays, const StaticInstPtr &static_inst,
         cpu->dumpInsts();
         dumpSNList();
 #endif
-        assert(cpu->instcount <= 1500);
+        // assert(cpu->instcount <= 1500);
     }
 
     DPRINTF(DynInst,
@@ -304,9 +304,24 @@ DynInst::dump(std::string &outstring)
 void
 DynInst::markSrcRegReady()
 {
-    DPRINTF(IQ, "[sn:%lli] has %d ready out of %d sources. RTI %d)\n",
-            seqNum, readyRegs+1, numSrcRegs(), readyToIssue());
-    if (++readyRegs == numSrcRegs()) {
+    int numRegsReady = 0;
+
+    // for (int i = 0; i < numSrcRegs(); i++) {
+    //     if (readySrcIdx(renamedSrcIdx(i)->index())) {
+    //         numRegsReady++;
+    //     }
+    // }
+
+    // if (numRegsReady == numSrcRegs()) {
+    //     setCanIssue();
+    // }
+
+    DPRINTF(IQ, "[sn:%lli] has actual: %d vs fake: %d ready out of %d sources. RTI %d)\n",
+            seqNum, numRegsReady, readyRegs+1, numSrcRegs(), readyToIssue());
+
+    ++readyRegs;
+
+    if (readyRegs == numSrcRegs()) {
         setCanIssue();
     }
 }

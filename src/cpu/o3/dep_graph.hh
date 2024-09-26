@@ -55,13 +55,14 @@ class DependencyEntry
 {
   public:
     DependencyEntry()
-        : inst(NULL), next(NULL)
+        : inst(NULL), next(NULL), more(0)
     { }
 
     DynInstPtr inst;
     //Might want to include data about what arch. register the
     //dependence is waiting on.
     DependencyEntry<DynInstPtr> *next;
+    int more;
 };
 
 /** Array of linked list that maintains the dependencies between
@@ -95,9 +96,15 @@ class DependencyGraph
     /** Inserts an instruction to be dependent on the given index. */
     void insert(RegIndex idx, const DynInstPtr &new_inst);
 
+    void insert(RegIndex idx, const DynInstPtr &new_inst, const int more);
+
     /** Sets the producing instruction of a given register. */
     void setInst(RegIndex idx, const DynInstPtr &new_inst)
     { dependGraph[idx].inst = new_inst; }
+
+    const DynInstPtr &getInst(RegIndex idx) {
+        return dependGraph[idx].inst;
+    }
 
     /** Clears the producing instruction. */
     void clearInst(RegIndex idx)
@@ -139,7 +146,7 @@ class DependencyGraph
         }
     }
 
-  private:
+  public:
     /** Array of linked lists.  Each linked list is a list of all the
      *  instructions that depend upon a given register.  The actual
      *  register's index is used to index into the graph; ie all
@@ -222,6 +229,25 @@ DependencyGraph<DynInstPtr>::insert(RegIndex idx, const DynInstPtr &new_inst)
     ++memAllocCounter;
 }
 
+template <class DynInstPtr>
+void
+DependencyGraph<DynInstPtr>::insert(RegIndex idx, const DynInstPtr &new_inst, const int more)
+{
+    //Add this new, dependent instruction at the head of the dependency
+    //chain.
+
+    // First create the entry that will be added to the head of the
+    // dependency chain.
+    DepEntry *new_entry = new DepEntry;
+    new_entry->next = dependGraph[idx].next;
+    new_entry->inst = new_inst;
+    new_entry->more = more;
+
+    // Then actually add it to the chain.
+    dependGraph[idx].next = new_entry;
+
+    ++memAllocCounter;
+}
 
 template <class DynInstPtr>
 void
