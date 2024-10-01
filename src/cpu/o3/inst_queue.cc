@@ -634,9 +634,9 @@ InstructionQueue::logInsert(const DynInstPtr &inst)
     RegIndex max = 0;
 
     for (size_t regIdx = 0; regIdx < inst->numSrcRegs(); regIdx++) {
-        RegIndex destRegIdx = inst->renamedSrcIdx(regIdx)->index();
+        RegIndex destRegIdx = inst->renamedSrcIdx(regIdx)->flatIndex();
 
-        // special case for reg 0
+        // special case for arch reg 0
         if (destRegIdx == 65535) {
             continue;
         }
