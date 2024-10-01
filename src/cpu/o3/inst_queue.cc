@@ -73,6 +73,9 @@ std::string format_inst(const DynInstPtr& inst)
 
     for (int reg_idx = 0; reg_idx < inst->numDestRegs(); reg_idx++) {
         inst_contents += std::to_string(inst->renamedDestIdx(reg_idx)->flatIndex());
+        inst_contents += "[";
+        inst_contents += std::to_string(inst->destRegIdx(reg_idx).index());
+        inst_contents += "]";
         inst_contents += " ";
     }
 
@@ -80,6 +83,9 @@ std::string format_inst(const DynInstPtr& inst)
 
     for (int reg_idx = 0; reg_idx < inst->numSrcRegs(); reg_idx++) {
         inst_contents += std::to_string(inst->renamedSrcIdx(reg_idx)->flatIndex());
+        inst_contents += "[";
+        inst_contents += std::to_string(inst->srcRegIdx(reg_idx).index());
+        inst_contents += "]";
         inst_contents += " ";
     }
 
@@ -119,7 +125,7 @@ InstructionQueue::InstructionQueue(CPU *cpu_ptr, IEW *iew_ptr,
       numEntries(params.numIQEntries),
       totalWidth(params.issueWidth),
       commitToIEWDelay(params.commitToIEWDelay),
-      iqStats(cpu, totalWidth),
+      iqStats(cpu, totalWidth, params),
       iqIOStats(cpu)
 {
     assert(fuPool);
@@ -183,10 +189,19 @@ InstructionQueue::InstructionQueue(CPU *cpu_ptr, IEW *iew_ptr,
 
         DPRINTF(IQ, "IQ sharing policy set to Threshold:"
                 "%i entries per thread.\n",thresholdIQ);
-   }
+    }
+
     for (ThreadID tid = numThreads; tid < MaxThreads; tid++) {
         maxEntries[tid] = 0;
     }
+
+    int numArchRegs = 0;
+
+    for (int i = 0; i <= CCRegClass; i++) {
+        numArchRegs += cpu->params().isa[0]->regClasses().at(i)->numRegs();
+    }
+
+    DPRINTF(IQ, "numArchRegs: %d\n", numArchRegs);
 }
 
 InstructionQueue::~InstructionQueue()
@@ -204,7 +219,7 @@ InstructionQueue::name() const
     return cpu->name() + ".iq";
 }
 
-InstructionQueue::IQStats::IQStats(CPU *cpu, const unsigned &total_width)
+InstructionQueue::IQStats::IQStats(CPU *cpu, const unsigned &total_width, const BaseO3CPUParams &params)
     : statistics::Group(cpu),
     ADD_STAT(instsAdded, statistics::units::Count::get(),
              "Number of instructions added to the IQ (excludes non-spec)"),
@@ -234,6 +249,8 @@ InstructionQueue::IQStats::IQStats(CPU *cpu, const unsigned &total_width)
              "Number of squashed non-spec instructions that were removed"),
     ADD_STAT(numIssuedDist, statistics::units::Count::get(),
              "Number of insts issued each cycle"),
+    ADD_STAT(phyRegsDistance, statistics::units::Count::get(),
+             "Distance between the max(rs) and min(rs)"),
     ADD_STAT(statFuBusy, statistics::units::Count::get(),
              "attempts to use FU when none available"),
     ADD_STAT(statIssuedInstType, statistics::units::Count::get(),
@@ -340,6 +357,24 @@ InstructionQueue::IQStats::IQStats(CPU *cpu, const unsigned &total_width)
     for (int i=0; i < Num_OpClasses; ++i) {
         statFuBusy.subname(i, enums::OpClassStrings[i]);
     }
+
+    unsigned numPhysRegs = 0;
+    const auto &reg_classes = params.isa[0]->regClasses();
+
+    numPhysRegs = params.numPhysIntRegs + params.numPhysFloatRegs +
+                    params.numPhysVecRegs +
+                    params.numPhysVecRegs * (
+                            reg_classes.at(VecElemClass)->numRegs() /
+                            reg_classes.at(VecRegClass)->numRegs()) +
+                    params.numPhysVecPredRegs +
+                    params.numPhysMatRegs +
+                    params.numPhysCCRegs;
+
+    printf(">>>>>>>>>>>>>>>>>>>>>>> numPhyRegs: %u\n", numPhysRegs);
+
+    phyRegsDistance
+        .init(numPhysRegs)
+        .flags(statistics::total | statistics::pdf | statistics::dist);
 
     fuBusy
         .init(cpu->numThreads)
@@ -587,8 +622,48 @@ InstructionQueue::hasReadyInsts()
 }
 
 void
+InstructionQueue::logInsert(const DynInstPtr &inst)
+{
+
+    if (0 == inst->numSrcRegs()) {
+        return;
+    }
+
+    bool valid = false;
+    RegIndex min = UINT16_MAX;
+    RegIndex max = 0;
+
+    for (size_t regIdx = 0; regIdx < inst->numSrcRegs(); regIdx++) {
+        RegIndex destRegIdx = inst->renamedSrcIdx(regIdx)->flatIndex();
+
+        // special case for arch reg 0
+        if (destRegIdx == 65535) {
+            continue;
+        }
+
+        valid = true;
+        min = std::min(destRegIdx, min);
+        max = std::max(destRegIdx, max);
+    }
+
+    DPRINTF(IQ, "logging: %s, valid: %d\n", format_inst(inst), valid);
+
+    if (!valid) {
+        return;
+    }
+
+    RegIndex distance = std::min(max - min, ((RegIndex) numPhysRegs) - max + min);
+
+    DPRINTF(IQ, "distance: %u, max: %u, min: %u\n", distance, max, min);
+
+    iqStats.phyRegsDistance[distance]++;
+}
+
+void
 InstructionQueue::insert(const DynInstPtr &new_inst)
 {
+    logInsert(new_inst);
+
     if (new_inst->isFloating()) {
         iqIOStats.fpInstQueueWrites++;
     } else if (new_inst->isVector()) {
@@ -636,6 +711,8 @@ InstructionQueue::insert(const DynInstPtr &new_inst)
 void
 InstructionQueue::insertNonSpec(const DynInstPtr &new_inst)
 {
+    logInsert(new_inst);
+
     // @todo: Clean up this code; can do it by setting inst as unable
     // to issue, then calling normal insert on the inst.
     if (new_inst->isFloating()) {
