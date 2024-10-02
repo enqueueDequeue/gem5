@@ -454,6 +454,8 @@ class InstructionQueue
      */
     std::vector<bool> regScoreboard;
 
+    void logInsert(const DynInstPtr &inst);
+
     /** Adds an instruction to the dependency graph, as a consumer. */
     bool addToDependents(const DynInstPtr &new_inst);
 
@@ -482,7 +484,7 @@ class InstructionQueue
 
     struct IQStats : public statistics::Group
     {
-        IQStats(CPU *cpu, const unsigned &total_width);
+        IQStats(CPU *cpu, const unsigned &total_width, const BaseO3CPUParams &params);
         /** Stat for number of instructions added. */
         statistics::Scalar instsAdded;
         /** Stat for number of non-speculative instructions added. */
@@ -525,6 +527,8 @@ class InstructionQueue
          * @todo: Need to create struct to track the ready time for each
          * instruction. */
         // statistics::VectorDistribution issueDelayDist;
+
+        statistics::Vector phyRegsDistance;
 
         /** Number of times an instruction could not be issued because a
          * FU was busy.
