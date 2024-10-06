@@ -371,6 +371,7 @@ SyscallDescTable<SEWorkload::SyscallABI64> EmuLinux::syscallDescs64 = {
     { 241,  "perf_event_open" },
     { 242,  "accept4" },
     { 243,  "recvmmsg" },
+    { 258,  "riscv_hwprobe", ignoreFunc },
     { 260,  "wait4", wait4Func<RiscvLinux64> },
     { 261,  "prlimit64", prlimitFunc<RiscvLinux64> },
     { 262,  "fanotify_init" },

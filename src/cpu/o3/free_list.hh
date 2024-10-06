@@ -73,22 +73,32 @@ class SimpleFreeList
   private:
 
     /** The actual free list */
-    std::queue<PhysRegIdPtr> freeRegs;
+    std::deque<PhysRegIdPtr> freeRegs;
+
+    void sortRegs() {
+      std::sort(freeRegs.begin(), freeRegs.end(), [](const PhysRegIdPtr& a, const PhysRegIdPtr& b) {
+        return a->flatIndex() < b->flatIndex();
+      });
+    }
 
   public:
 
     SimpleFreeList() {};
 
     /** Add a physical register to the free list */
-    void addReg(PhysRegIdPtr reg) { freeRegs.push(reg); }
+    void addReg(PhysRegIdPtr reg) {
+        freeRegs.push_back(reg);
+        sortRegs();
+    }
 
     /** Add physical registers to the free list */
     template<class InputIt>
     void
     addRegs(InputIt first, InputIt last) {
         std::for_each(first, last, [this](typename InputIt::value_type& reg) {
-            freeRegs.push(&reg);
+            freeRegs.push_back(&reg);
         });
+        sortRegs();
     }
 
     /** Get the next available register from the free list */
@@ -96,7 +106,7 @@ class SimpleFreeList
     {
         assert(!freeRegs.empty());
         PhysRegIdPtr free_reg = freeRegs.front();
-        freeRegs.pop();
+        freeRegs.pop_front();
         return free_reg;
     }
 

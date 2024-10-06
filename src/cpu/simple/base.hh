@@ -104,6 +104,8 @@ class BaseSimpleCPU : public BaseCPU
     StaticInstPtr curStaticInst;
     StaticInstPtr curMacroStaticInst;
 
+    std::map<std::string, Counter> instTypeCounter;
+
   protected:
     enum Status
     {

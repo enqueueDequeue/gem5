@@ -1017,7 +1017,15 @@ CommitCPUStats::CommitCPUStats(statistics::Group *parent, int thread_id)
     ADD_STAT(committedInstType, statistics::units::Count::get(),
             "Class of committed instruction."),
     ADD_STAT(committedControl, statistics::units::Count::get(),
-             "Class of control type instructions committed")
+             "Class of control type instructions committed"),
+    ADD_STAT(nInsts0Src, statistics::units::Count::get(),
+             "Number of instructions with 0 source operands"),
+    ADD_STAT(nInsts1Src, statistics::units::Count::get(),
+             "Number of instructions with 1 source operands"),
+    ADD_STAT(nInsts2Src, statistics::units::Count::get(),
+             "Number of instructions with 2 source operands"),
+    ADD_STAT(nInsts3pSrc, statistics::units::Count::get(),
+             "Number of instructions with 3 or more source operands")
 {
     numInsts
         .prereq(numInsts);

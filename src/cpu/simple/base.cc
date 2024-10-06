@@ -63,6 +63,7 @@
 #include "debug/Decode.hh"
 #include "debug/ExecFaulting.hh"
 #include "debug/Fetch.hh"
+#include "debug/Commit.hh"
 #include "debug/HtmCpu.hh"
 #include "debug/Quiesce.hh"
 #include "mem/packet.hh"
@@ -217,6 +218,10 @@ BaseSimpleCPU::haltContext(ThreadID thread_num)
     // for now, these are equivalent
     suspendContext(thread_num);
     updateCycleCounters(BaseCPU::CPU_STATE_SLEEP);
+
+    for (const auto& v: instTypeCounter) {
+        printf("insts[%s]: %lu\n", v.first.c_str(), v.second);
+    }
 }
 
 void
@@ -416,6 +421,37 @@ BaseSimpleCPU::postExecute()
     assert(curStaticInst);
 
     Addr instAddr = threadContexts[curThread]->pcState().instAddr();
+
+    #define MAX_INST_BYTES 8
+
+    int instBytes[2] = { 0 };
+
+    static_assert(sizeof(int) == MAX_INST_BYTES / 2);
+
+    size_t instSize = curStaticInst->asBytes(&instBytes, MAX_INST_BYTES);
+
+    assert(MAX_INST_BYTES == instSize);
+    assert(0x40000100 == instBytes[1]);
+
+    DPRINTF(Commit, "executed: %x, %d\n", instBytes[0], (int) curStaticInst->numSrcRegs());
+
+    if (0 == instTypeCounter.count(curStaticInst->getName())) {
+        instTypeCounter[curStaticInst->getName()] = 1;
+    } else {
+        instTypeCounter[curStaticInst->getName()] += 1;
+    }
+
+    if (curStaticInst->numSrcRegs() == 0) {
+        commitStats[t_info.thread->threadId()]->nInsts0Src++;
+    } else if (curStaticInst->numSrcRegs() == 1) {
+        commitStats[t_info.thread->threadId()]->nInsts1Src++;
+    } else if (curStaticInst->numSrcRegs() == 2) {
+        commitStats[t_info.thread->threadId()]->nInsts2Src++;
+    } else if (curStaticInst->numSrcRegs() >= 3) {
+        commitStats[t_info.thread->threadId()]->nInsts3pSrc++;
+    } else {
+        assert(false);
+    }
 
     if (curStaticInst->isMemRef()) {
         executeStats[t_info.thread->threadId()]->numMemRefs++;
