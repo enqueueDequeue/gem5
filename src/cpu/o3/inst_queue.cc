@@ -371,8 +371,12 @@ InstructionQueue::IQStats::IQStats(CPU *cpu, const unsigned &total_width, const 
     printf(">>>>>>>>>>>>>>>>>>>>>>> numPhyRegs: %u\n", numPhysRegs);
 
     phyRegsDistance
-        .init(numPhysRegs)
+        .init(numPhysRegs + 1)
         .flags(statistics::total | statistics::pdf | statistics::dist);
+
+    for (int i=0; i < numPhysRegs + 1; ++i) {
+        phyRegsDistance.subname(i, std::to_string(i - 1));
+    }
 
     fuBusy
         .init(cpu->numThreads)
@@ -622,37 +626,36 @@ InstructionQueue::hasReadyInsts()
 void
 InstructionQueue::logInsert(const DynInstPtr &inst)
 {
+    int distance = -1;
 
-    if (0 == inst->numSrcRegs()) {
-        return;
-    }
+    if (0 != inst->numSrcRegs()) {
+        bool valid = false;
+        RegIndex min = UINT16_MAX;
+        RegIndex max = 0;
 
-    bool valid = false;
-    RegIndex min = UINT16_MAX;
-    RegIndex max = 0;
+        for (size_t regIdx = 0; regIdx < inst->numSrcRegs(); regIdx++) {
+            RegIndex destRegIdx = inst->renamedSrcIdx(regIdx)->flatIndex();
 
-    for (size_t regIdx = 0; regIdx < inst->numSrcRegs(); regIdx++) {
-        RegIndex destRegIdx = inst->renamedSrcIdx(regIdx)->flatIndex();
+            if (!inst->readySrcIdx(regIdx)) {
+                valid = true;
+                min = std::min(destRegIdx, min);
+                max = std::max(destRegIdx, max);
+            }
+        }
 
-        if (!inst->readySrcIdx(regIdx)) {
-            valid = true;
-            min = std::min(destRegIdx, min);
-            max = std::max(destRegIdx, max);
+        DPRINTF(IQ, "distance: %u, max: %u, min: %u\n", distance, max, min);
+
+        // if all the source registers are ready
+        // then it's !valid, so, distance = -1
+        if (valid) {
+            distance = max - min;
         }
     }
 
-    DPRINTF(IQ, "logging: %s, valid: %d\n", format_inst(inst), valid);
 
-    if (!valid) {
-        max = 0;
-        min = 0;
-    }
+    DPRINTF(IQ, "logging: %s, distance: %d\n", format_inst(inst), distance);
 
-    RegIndex distance = max - min;
-
-    DPRINTF(IQ, "distance: %u, max: %u, min: %u\n", distance, max, min);
-
-    iqStats.phyRegsDistance[distance]++;
+    iqStats.phyRegsDistance[distance + 1]++;
 }
 
 void
