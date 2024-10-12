@@ -63,6 +63,9 @@ namespace gem5
 namespace o3
 {
 
+#define MINI_IQ_TAG 1
+#define MEGA_IQ_TAG 2
+
 std::string format_inst(const DynInstPtr& inst)
 {
     std::string inst_contents = "inst: ";
@@ -122,7 +125,7 @@ InstructionQueue::InstructionQueue(CPU *cpu_ptr, IEW *iew_ptr,
       fuPool(params.fuPool),
       iqPolicy(params.smtIQPolicy),
       numThreads(params.numThreads),
-      numEntries(params.numIQEntries),
+      numEntries(params.numIQEntries * (MINI_FACTOR + 1)),
       totalWidth(params.issueWidth),
       commitToIEWDelay(params.commitToIEWDelay),
       iqStats(cpu, totalWidth, params),
@@ -144,7 +147,8 @@ InstructionQueue::InstructionQueue(CPU *cpu_ptr, IEW *iew_ptr,
 
     //Create an entry for each physical register within the
     //dependency graph.
-    dependGraph.resize(numPhysRegs);
+    miniDependGraph.resize(numPhysRegs);
+    megaDependGraph.resize(numPhysRegs);
 
     // Resize the register scoreboard.
     regScoreboard.resize(numPhysRegs);
@@ -204,7 +208,8 @@ InstructionQueue::InstructionQueue(CPU *cpu_ptr, IEW *iew_ptr,
 
 InstructionQueue::~InstructionQueue()
 {
-    dependGraph.reset();
+    miniDependGraph.reset();
+    megaDependGraph.reset();
 #ifdef GEM5_DEBUG
     cprintf("Nodes traversed: %i, removed: %i\n",
             dependGraph.nodesTraversed, dependGraph.nodesRemoved);
@@ -464,7 +469,10 @@ InstructionQueue::resetState()
     }
 
     // Initialize the number of free IQ entries.
-    freeEntries = numEntries;
+    assert(numEntries % (MINI_FACTOR + 1) == 0);
+
+    miniFreeEntries = (MINI_FACTOR * numEntries) / (MINI_FACTOR + 1);
+    megaFreeEntries = numEntries / (MINI_FACTOR + 1);
 
     // Note that in actuality, the registers corresponding to the logical
     // registers start off as ready.  However this doesn't matter for the
@@ -516,7 +524,8 @@ InstructionQueue::setTimeBuffer(TimeBuffer<TimeStruct> *tb_ptr)
 bool
 InstructionQueue::isDrained() const
 {
-    bool drained = dependGraph.empty() &&
+    bool drained = miniDependGraph.empty() &&
+                   megaDependGraph.empty() &&
                    instsToExecute.empty() &&
                    wbOutstanding == 0;
     for (ThreadID tid = 0; tid < numThreads; ++tid)
@@ -528,7 +537,8 @@ InstructionQueue::isDrained() const
 void
 InstructionQueue::drainSanityCheck() const
 {
-    assert(dependGraph.empty());
+    assert(miniDependGraph.empty());
+    assert(megaDependGraph.empty());
     assert(instsToExecute.empty());
     for (ThreadID tid = 0; tid < numThreads; ++tid)
         memDepUnit[tid].drainSanityCheck();
@@ -576,7 +586,7 @@ InstructionQueue::resetEntries()
 unsigned
 InstructionQueue::numFreeEntries()
 {
-    return freeEntries;
+    return std::min(megaFreeEntries, miniFreeEntries);
 }
 
 unsigned
@@ -590,7 +600,7 @@ InstructionQueue::numFreeEntries(ThreadID tid)
 bool
 InstructionQueue::isFull()
 {
-    if (freeEntries == 0) {
+    if (numFreeEntries() == 0) {
         return(true);
     } else {
         return(false);
@@ -621,6 +631,22 @@ InstructionQueue::hasReadyInsts()
     }
 
     return false;
+}
+
+static int dependentRegisterCount(const DynInstPtr &new_inst) {
+    int nDependentSourceOperands = 0;
+
+    for (int src_reg_idx = 0;
+         src_reg_idx < new_inst->numSrcRegs();
+         src_reg_idx++)
+    {
+        // Only add it to the dependency graph if it's not ready.
+        if (!new_inst->readySrcIdx(src_reg_idx)) {
+            nDependentSourceOperands += 1;
+        }
+    }
+
+    return nDependentSourceOperands;
 }
 
 void
@@ -678,11 +704,17 @@ InstructionQueue::insert(const DynInstPtr &new_inst)
 
     DPRINTF(IQ, "Inserting: %s\n", format_inst(new_inst));
 
-    assert(freeEntries != 0);
+    assert(numFreeEntries() != 0);
 
     instList[new_inst->threadNumber].push_back(new_inst);
 
-    --freeEntries;
+    if (dependentRegisterCount(new_inst) <= 1) {
+        new_inst->iqTag = MINI_IQ_TAG;
+        --miniFreeEntries;
+    } else {
+        new_inst->iqTag = MEGA_IQ_TAG;
+        --megaFreeEntries;
+    }
 
     new_inst->setInIQ();
 
@@ -703,8 +735,6 @@ InstructionQueue::insert(const DynInstPtr &new_inst)
     ++iqStats.instsAdded;
 
     count[new_inst->threadNumber]++;
-
-    assert(freeEntries == (numEntries - countInsts()));
 }
 
 void
@@ -730,11 +760,17 @@ InstructionQueue::insertNonSpec(const DynInstPtr &new_inst)
             "to the IQ.\n",
             new_inst->seqNum, new_inst->pcState());
 
-    assert(freeEntries != 0);
+    assert(numFreeEntries() != 0);
 
     instList[new_inst->threadNumber].push_back(new_inst);
 
-    --freeEntries;
+    if (dependentRegisterCount(new_inst) <= 1) {
+        new_inst->iqTag = MINI_IQ_TAG;
+        --miniFreeEntries;
+    } else {
+        new_inst->iqTag = MEGA_IQ_TAG;
+        --megaFreeEntries;
+    }
 
     new_inst->setInIQ();
 
@@ -751,8 +787,6 @@ InstructionQueue::insertNonSpec(const DynInstPtr &new_inst)
     ++iqStats.nonSpecInstsAdded;
 
     count[new_inst->threadNumber]++;
-
-    assert(freeEntries == (numEntries - countInsts()));
 }
 
 void
@@ -993,7 +1027,15 @@ InstructionQueue::scheduleReadyInsts()
             if (!issuing_inst->isMemRef()) {
                 // Memory instructions can not be freed from the IQ until they
                 // complete.
-                ++freeEntries;
+
+                assert(issuing_inst->iqTag == MINI_IQ_TAG || issuing_inst->iqTag == MEGA_IQ_TAG);
+
+                if (issuing_inst->iqTag == MINI_IQ_TAG) {
+                    ++miniFreeEntries;
+                } else {
+                    ++megaFreeEntries;
+                }
+
                 count[tid]--;
                 issuing_inst->clearInIQ();
             } else {
@@ -1063,8 +1105,6 @@ InstructionQueue::commit(const InstSeqNum &inst, ThreadID tid)
         ++iq_it;
         instList[tid].pop_front();
     }
-
-    assert(freeEntries == (numEntries - countInsts()));
 }
 
 int
@@ -1097,7 +1137,15 @@ InstructionQueue::wakeDependents(const DynInstPtr &completed_inst)
         DPRINTF(IQ, "Completing mem instruction PC: %s [sn:%llu]\n",
             completed_inst->pcState(), completed_inst->seqNum);
 
-        ++freeEntries;
+        assert(completed_inst->iqTag == MINI_IQ_TAG || completed_inst->iqTag == MEGA_IQ_TAG);
+
+        if (completed_inst->iqTag == MINI_IQ_TAG) {
+            ++miniFreeEntries;
+        } else {
+            ++megaFreeEntries;
+        }
+
+
         completed_inst->memOpDone(true);
         count[tid]--;
     } else if (completed_inst->isReadBarrier() ||
@@ -1138,29 +1186,57 @@ InstructionQueue::wakeDependents(const DynInstPtr &completed_inst)
 
         //Go through the dependency chain, marking the registers as
         //ready within the waiting instructions.
-        DynInstPtr dep_inst = dependGraph.pop(dest_reg->flatIndex());
+        {
+            DynInstPtr dep_inst = miniDependGraph.pop(dest_reg->flatIndex());
 
-        while (dep_inst) {
-            DPRINTF(IQ, "Waking up a dependent instruction, [sn:%llu] "
-                    "PC %s.\n", dep_inst->seqNum, dep_inst->pcState());
+            while (dep_inst) {
+                DPRINTF(IQ, "Waking up a dependent instruction, [sn:%llu] "
+                        "PC %s.\n", dep_inst->seqNum, dep_inst->pcState());
 
-            // Might want to give more information to the instruction
-            // so that it knows which of its source registers is
-            // ready.  However that would mean that the dependency
-            // graph entries would need to hold the src_reg_idx.
-            dep_inst->markSrcRegReady();
+                // Might want to give more information to the instruction
+                // so that it knows which of its source registers is
+                // ready.  However that would mean that the dependency
+                // graph entries would need to hold the src_reg_idx.
+                dep_inst->markSrcRegReady();
 
-            addIfReady(dep_inst);
+                addIfReady(dep_inst);
 
-            dep_inst = dependGraph.pop(dest_reg->flatIndex());
+                dep_inst = miniDependGraph.pop(dest_reg->flatIndex());
 
-            ++dependents;
+                ++dependents;
+            }
+
+            // Reset the head node now that all of its dependents have
+            // been woken up.
+            assert(miniDependGraph.empty(dest_reg->flatIndex()));
+            miniDependGraph.clearInst(dest_reg->flatIndex());
         }
 
-        // Reset the head node now that all of its dependents have
-        // been woken up.
-        assert(dependGraph.empty(dest_reg->flatIndex()));
-        dependGraph.clearInst(dest_reg->flatIndex());
+        {
+            DynInstPtr dep_inst = megaDependGraph.pop(dest_reg->flatIndex());
+
+            while (dep_inst) {
+                DPRINTF(IQ, "Waking up a dependent instruction, [sn:%llu] "
+                        "PC %s.\n", dep_inst->seqNum, dep_inst->pcState());
+
+                // Might want to give more information to the instruction
+                // so that it knows which of its source registers is
+                // ready.  However that would mean that the dependency
+                // graph entries would need to hold the src_reg_idx.
+                dep_inst->markSrcRegReady();
+
+                addIfReady(dep_inst);
+
+                dep_inst = megaDependGraph.pop(dest_reg->flatIndex());
+
+                ++dependents;
+            }
+
+            // Reset the head node now that all of its dependents have
+            // been woken up.
+            assert(megaDependGraph.empty(dest_reg->flatIndex()));
+            megaDependGraph.clearInst(dest_reg->flatIndex());
+        }
 
         // Mark the scoreboard as having that register ready.
         regScoreboard[dest_reg->flatIndex()] = true;
@@ -1356,8 +1432,14 @@ InstructionQueue::doSquash(ThreadID tid)
 
                     if (!squashed_inst->readySrcIdx(src_reg_idx) &&
                         !src_reg->isFixedMapping()) {
-                        dependGraph.remove(src_reg->flatIndex(),
-                                           squashed_inst);
+
+                        assert(squashed_inst->iqTag == MINI_IQ_TAG || squashed_inst->iqTag == MEGA_IQ_TAG);
+
+                        if (squashed_inst->iqTag == MINI_IQ_TAG) {
+                            miniDependGraph.remove(src_reg->flatIndex(), squashed_inst);
+                        } else {
+                            megaDependGraph.remove(src_reg->flatIndex(), squashed_inst);
+                        }
                     }
 
                     ++iqStats.squashedOperandsExamined;
@@ -1401,7 +1483,13 @@ InstructionQueue::doSquash(ThreadID tid)
             //Update Thread IQ Count
             count[squashed_inst->threadNumber]--;
 
-            ++freeEntries;
+            assert(squashed_inst->iqTag == MINI_IQ_TAG || squashed_inst->iqTag == MEGA_IQ_TAG);
+
+            if (squashed_inst->iqTag == MINI_IQ_TAG) {
+                ++miniFreeEntries;
+            } else {
+                ++megaFreeEntries;
+            }
         }
 
         // IQ clears out the heads of the dependency graph only when
@@ -1420,8 +1508,16 @@ InstructionQueue::doSquash(ThreadID tid)
             if (dest_reg->isFixedMapping()){
                 continue;
             }
-            assert(dependGraph.empty(dest_reg->flatIndex()));
-            dependGraph.clearInst(dest_reg->flatIndex());
+
+            assert(squashed_inst->iqTag == MINI_IQ_TAG || squashed_inst->iqTag == MEGA_IQ_TAG);
+
+            if (squashed_inst->iqTag == MINI_IQ_TAG) {
+                assert(miniDependGraph.empty(dest_reg->flatIndex()));
+                miniDependGraph.clearInst(dest_reg->flatIndex());
+            } else {
+                assert(megaDependGraph.empty(dest_reg->flatIndex()));
+                megaDependGraph.clearInst(dest_reg->flatIndex());
+            }
         }
         instList[tid].erase(squash_it--);
         ++iqStats.squashedInstsExamined;
@@ -1443,38 +1539,78 @@ InstructionQueue::addToDependents(const DynInstPtr &new_inst)
     int8_t total_src_regs = new_inst->numSrcRegs();
     bool return_val = false;
 
-    for (int src_reg_idx = 0;
-         src_reg_idx < total_src_regs;
-         src_reg_idx++)
-    {
-        // Only add it to the dependency graph if it's not ready.
-        if (!new_inst->readySrcIdx(src_reg_idx)) {
-            PhysRegIdPtr src_reg = new_inst->renamedSrcIdx(src_reg_idx);
+    int nDependentSourceOperands = dependentRegisterCount(new_inst);
 
-            // Check the IQ's scoreboard to make sure the register
-            // hasn't become ready while the instruction was in flight
-            // between stages.  Only if it really isn't ready should
-            // it be added to the dependency graph.
-            if (src_reg->isFixedMapping()) {
-                continue;
-            } else if (!regScoreboard[src_reg->flatIndex()]) {
-                DPRINTF(IQ, "Instruction PC %s has src reg %i (%s) that "
-                        "is being added to the dependency chain.\n",
-                        new_inst->pcState(), src_reg->index(),
-                        src_reg->className());
+    if (nDependentSourceOperands <= 1) {
+        for (int src_reg_idx = 0;
+            src_reg_idx < total_src_regs;
+            src_reg_idx++)
+        {
+            // Only add it to the dependency graph if it's not ready.
+            if (!new_inst->readySrcIdx(src_reg_idx)) {
+                PhysRegIdPtr src_reg = new_inst->renamedSrcIdx(src_reg_idx);
 
-                dependGraph.insert(src_reg->flatIndex(), new_inst);
+                // Check the IQ's scoreboard to make sure the register
+                // hasn't become ready while the instruction was in flight
+                // between stages.  Only if it really isn't ready should
+                // it be added to the dependency graph.
+                if (src_reg->isFixedMapping()) {
+                    continue;
+                } else if (!regScoreboard[src_reg->flatIndex()]) {
+                    DPRINTF(IQ, "Instruction PC %s has src reg %i (%s) that "
+                            "is being added to the dependency chain.\n",
+                            new_inst->pcState(), src_reg->index(),
+                            src_reg->className());
 
-                // Change the return value to indicate that something
-                // was added to the dependency graph.
-                return_val = true;
-            } else {
-                DPRINTF(IQ, "Instruction PC %s has src reg %i (%s) that "
-                        "became ready before it reached the IQ.\n",
-                        new_inst->pcState(), src_reg->index(),
-                        src_reg->className());
-                // Mark a register ready within the instruction.
-                new_inst->markSrcRegReady(src_reg_idx);
+                    miniDependGraph.insert(src_reg->flatIndex(), new_inst);
+
+                    // Change the return value to indicate that something
+                    // was added to the dependency graph.
+                    return_val = true;
+                } else {
+                    DPRINTF(IQ, "Instruction PC %s has src reg %i (%s) that "
+                            "became ready before it reached the IQ.\n",
+                            new_inst->pcState(), src_reg->index(),
+                            src_reg->className());
+                    // Mark a register ready within the instruction.
+                    new_inst->markSrcRegReady(src_reg_idx);
+                }
+            }
+        }
+    } else {
+        for (int src_reg_idx = 0;
+            src_reg_idx < total_src_regs;
+            src_reg_idx++)
+        {
+            // Only add it to the dependency graph if it's not ready.
+            if (!new_inst->readySrcIdx(src_reg_idx)) {
+                PhysRegIdPtr src_reg = new_inst->renamedSrcIdx(src_reg_idx);
+
+                // Check the IQ's scoreboard to make sure the register
+                // hasn't become ready while the instruction was in flight
+                // between stages.  Only if it really isn't ready should
+                // it be added to the dependency graph.
+                if (src_reg->isFixedMapping()) {
+                    continue;
+                } else if (!regScoreboard[src_reg->flatIndex()]) {
+                    DPRINTF(IQ, "Instruction PC %s has src reg %i (%s) that "
+                            "is being added to the dependency chain.\n",
+                            new_inst->pcState(), src_reg->index(),
+                            src_reg->className());
+
+                    megaDependGraph.insert(src_reg->flatIndex(), new_inst);
+
+                    // Change the return value to indicate that something
+                    // was added to the dependency graph.
+                    return_val = true;
+                } else {
+                    DPRINTF(IQ, "Instruction PC %s has src reg %i (%s) that "
+                            "became ready before it reached the IQ.\n",
+                            new_inst->pcState(), src_reg->index(),
+                            src_reg->className());
+                    // Mark a register ready within the instruction.
+                    new_inst->markSrcRegReady(src_reg_idx);
+                }
             }
         }
     }
@@ -1491,29 +1627,58 @@ InstructionQueue::addToProducers(const DynInstPtr &new_inst)
     // the dependency links.
     int8_t total_dest_regs = new_inst->numDestRegs();
 
-    for (int dest_reg_idx = 0;
+    int nDependentSourceOperands = dependentRegisterCount(new_inst);
+
+    if (nDependentSourceOperands <= 1) {
+        for (int dest_reg_idx = 0;
          dest_reg_idx < total_dest_regs;
          dest_reg_idx++)
-    {
-        PhysRegIdPtr dest_reg = new_inst->renamedDestIdx(dest_reg_idx);
+        {
+            PhysRegIdPtr dest_reg = new_inst->renamedDestIdx(dest_reg_idx);
 
-        // Some registers have fixed mapping, and there is no need to track
-        // dependencies as these instructions must be executed at commit.
-        if (dest_reg->isFixedMapping()) {
-            continue;
+            // Some registers have fixed mapping, and there is no need to track
+            // dependencies as these instructions must be executed at commit.
+            if (dest_reg->isFixedMapping()) {
+                continue;
+            }
+
+            if (!miniDependGraph.empty(dest_reg->flatIndex())) {
+                miniDependGraph.dump();
+                panic("Dependency graph %i (%s) (flat: %i) not empty!",
+                    dest_reg->index(), dest_reg->className(),
+                    dest_reg->flatIndex());
+            }
+
+            miniDependGraph.setInst(dest_reg->flatIndex(), new_inst);
+
+            // Mark the scoreboard to say it's not yet ready.
+            regScoreboard[dest_reg->flatIndex()] = false;
         }
+    } else {
+        for (int dest_reg_idx = 0;
+         dest_reg_idx < total_dest_regs;
+         dest_reg_idx++)
+        {
+            PhysRegIdPtr dest_reg = new_inst->renamedDestIdx(dest_reg_idx);
 
-        if (!dependGraph.empty(dest_reg->flatIndex())) {
-            dependGraph.dump();
-            panic("Dependency graph %i (%s) (flat: %i) not empty!",
-                  dest_reg->index(), dest_reg->className(),
-                  dest_reg->flatIndex());
+            // Some registers have fixed mapping, and there is no need to track
+            // dependencies as these instructions must be executed at commit.
+            if (dest_reg->isFixedMapping()) {
+                continue;
+            }
+
+            if (!megaDependGraph.empty(dest_reg->flatIndex())) {
+                megaDependGraph.dump();
+                panic("Dependency graph %i (%s) (flat: %i) not empty!",
+                    dest_reg->index(), dest_reg->className(),
+                    dest_reg->flatIndex());
+            }
+
+            megaDependGraph.setInst(dest_reg->flatIndex(), new_inst);
+
+            // Mark the scoreboard to say it's not yet ready.
+            regScoreboard[dest_reg->flatIndex()] = false;
         }
-
-        dependGraph.setInst(dest_reg->flatIndex(), new_inst);
-
-        // Mark the scoreboard to say it's not yet ready.
-        regScoreboard[dest_reg->flatIndex()] = false;
     }
 }
 
@@ -1559,7 +1724,7 @@ InstructionQueue::addIfReady(const DynInstPtr &inst)
 int
 InstructionQueue::countInsts()
 {
-    return numEntries - freeEntries;
+    return numEntries - numFreeEntries();
 }
 
 void
