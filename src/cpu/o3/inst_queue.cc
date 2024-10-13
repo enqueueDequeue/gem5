@@ -586,6 +586,7 @@ InstructionQueue::resetEntries()
 unsigned
 InstructionQueue::numFreeEntries()
 {
+    DPRINTF(IQ, "megaFreeEntries: %d, miniFreeEntries: %d\n", megaFreeEntries, miniFreeEntries);
     return std::min(megaFreeEntries, miniFreeEntries);
 }
 
@@ -610,6 +611,10 @@ InstructionQueue::isFull()
 bool
 InstructionQueue::isFull(ThreadID tid)
 {
+    if (isFull()) {
+        return true;
+    }
+
     if (numFreeEntries(tid) == 0) {
         return(true);
     } else {

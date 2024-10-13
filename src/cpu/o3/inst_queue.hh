@@ -425,7 +425,7 @@ class InstructionQueue
     unsigned maxEntries[MaxThreads];
 
     /** Number of free IQ entries left. */
-    #define MINI_FACTOR 2
+    #define MINI_FACTOR 16
 
     unsigned miniFreeEntries;
     unsigned megaFreeEntries;
