@@ -52,6 +52,7 @@
 #include "cpu/inst_seq.hh"
 #include "cpu/o3/comm.hh"
 #include "cpu/o3/dep_graph.hh"
+#include "cpu/o3/dep_graph_reg.hh"
 #include "cpu/o3/dyn_inst_ptr.hh"
 #include "cpu/o3/limits.hh"
 #include "cpu/o3/mem_dep_unit.hh"
@@ -402,7 +403,7 @@ class InstructionQueue
      */
     void moveToYoungerInst(ListOrderIt age_order_it);
 
-    DependencyGraph<DynInstPtr> miniDependGraph;
+    DependencyGraphReg<DynInstPtr> miniDependGraph;
     DependencyGraph<DynInstPtr> megaDependGraph;
 
     //////////////////////////////////////
@@ -426,6 +427,7 @@ class InstructionQueue
 
     /** Number of free IQ entries left. */
     #define MINI_FACTOR 16
+    #define MINI_MAX_ISOD 1
 
     unsigned miniFreeEntries;
     unsigned megaFreeEntries;
@@ -457,6 +459,8 @@ class InstructionQueue
      *  the scoreboard that exists in the rename map.
      */
     std::vector<bool> regScoreboard;
+
+    int isod(const DynInstPtr &inst);
 
     void logInsert(const DynInstPtr &inst);
 

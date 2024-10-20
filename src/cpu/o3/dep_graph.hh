@@ -106,6 +106,8 @@ class DependencyGraph
     /** Removes an instruction from a single linked list. */
     void remove(RegIndex idx, const DynInstPtr &inst_to_remove);
 
+    void retract(const DynInstPtr &inst) {}
+
     /** Removes and returns the newest dependent of a specific register. */
     DynInstPtr pop(RegIndex idx);
 
