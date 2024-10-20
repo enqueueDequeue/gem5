@@ -1186,18 +1186,13 @@ InstructionQueue::wakeDependents(const DynInstPtr &completed_inst)
                 dest_reg->index(),
                 dest_reg->className());
 
-        // allocate enough space just in case
-        constexpr unsigned dependentsArrMaxSize = 1024;
-        unsigned dependentsArrSize = 0;
-        DynInstPtr dependentsArr[dependentsArrMaxSize];
-
         //Go through the dependency chain, marking the registers as
         //ready within the waiting instructions.
         {
             DynInstPtr dep_inst = miniDependGraph.pop(dest_reg->flatIndex());
 
             while (dep_inst) {
-                DPRINTF(IQ, "Waking up a dependent instruction, [sn:%llu] "
+                DPRINTF(IQ, "Waking up a dependent instruction from miniDependGraph, [sn:%llu] "
                         "PC %s.\n", dep_inst->seqNum, dep_inst->pcState());
 
                 // Might want to give more information to the instruction
@@ -1206,8 +1201,7 @@ InstructionQueue::wakeDependents(const DynInstPtr &completed_inst)
                 // graph entries would need to hold the src_reg_idx.
                 dep_inst->markSrcRegReady();
 
-                dependentsArr[dependentsArrSize] = dep_inst;
-                ++dependentsArrSize;
+                addIfReady(dep_inst);
 
                 dep_inst = miniDependGraph.pop(dest_reg->flatIndex());
 
@@ -1224,7 +1218,7 @@ InstructionQueue::wakeDependents(const DynInstPtr &completed_inst)
             DynInstPtr dep_inst = megaDependGraph.pop(dest_reg->flatIndex());
 
             while (dep_inst) {
-                DPRINTF(IQ, "Waking up a dependent instruction, [sn:%llu] "
+                DPRINTF(IQ, "Waking up a dependent instruction from megaDependGraph, [sn:%llu] "
                         "PC %s.\n", dep_inst->seqNum, dep_inst->pcState());
 
                 // Might want to give more information to the instruction
@@ -1233,8 +1227,7 @@ InstructionQueue::wakeDependents(const DynInstPtr &completed_inst)
                 // graph entries would need to hold the src_reg_idx.
                 dep_inst->markSrcRegReady();
 
-                dependentsArr[dependentsArrSize] = dep_inst;
-                ++dependentsArrSize;
+                addIfReady(dep_inst);
 
                 dep_inst = megaDependGraph.pop(dest_reg->flatIndex());
 
@@ -1245,18 +1238,6 @@ InstructionQueue::wakeDependents(const DynInstPtr &completed_inst)
             // been woken up.
             assert(megaDependGraph.empty(dest_reg->flatIndex()));
             megaDependGraph.clearInst(dest_reg->flatIndex());
-        }
-
-        assert(dependentsArrSize < dependentsArrMaxSize);
-
-        // sort the instructions
-        // This is essentially the Re-Shuffle buffer
-        std::sort(std::begin(dependentsArr), std::begin(dependentsArr) + dependentsArrSize, [](const DynInstPtr& a, const DynInstPtr& b) {
-            return a->seqNum < b->seqNum;
-        });
-
-        for (int idx = 0; idx < dependentsArrSize; idx++) {
-            addIfReady(dependentsArr[idx]);
         }
 
         // Mark the scoreboard as having that register ready.
