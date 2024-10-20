@@ -402,7 +402,8 @@ class InstructionQueue
      */
     void moveToYoungerInst(ListOrderIt age_order_it);
 
-    DependencyGraph<DynInstPtr> dependGraph;
+    DependencyGraph<DynInstPtr> miniDependGraph;
+    DependencyGraph<DynInstPtr> megaDependGraph;
 
     //////////////////////////////////////
     // Various parameters
@@ -424,7 +425,10 @@ class InstructionQueue
     unsigned maxEntries[MaxThreads];
 
     /** Number of free IQ entries left. */
-    unsigned freeEntries;
+    #define MINI_FACTOR 16
+
+    unsigned miniFreeEntries;
+    unsigned megaFreeEntries;
 
     /** The number of entries in the instruction queue. */
     unsigned numEntries;
