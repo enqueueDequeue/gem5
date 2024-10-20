@@ -41,6 +41,7 @@
 
 #include "cpu/o3/inst_queue.hh"
 
+#include <algorithm>
 #include <limits>
 #include <vector>
 
@@ -1185,6 +1186,11 @@ InstructionQueue::wakeDependents(const DynInstPtr &completed_inst)
                 dest_reg->index(),
                 dest_reg->className());
 
+        // allocate enough space just in case
+        constexpr unsigned dependentsArrMaxSize = 1024;
+        unsigned dependentsArrSize = 0;
+        DynInstPtr dependentsArr[dependentsArrMaxSize];
+
         //Go through the dependency chain, marking the registers as
         //ready within the waiting instructions.
         {
@@ -1200,7 +1206,8 @@ InstructionQueue::wakeDependents(const DynInstPtr &completed_inst)
                 // graph entries would need to hold the src_reg_idx.
                 dep_inst->markSrcRegReady();
 
-                addIfReady(dep_inst);
+                dependentsArr[dependentsArrSize] = dep_inst;
+                ++dependentsArrSize;
 
                 dep_inst = miniDependGraph.pop(dest_reg->flatIndex());
 
@@ -1226,7 +1233,8 @@ InstructionQueue::wakeDependents(const DynInstPtr &completed_inst)
                 // graph entries would need to hold the src_reg_idx.
                 dep_inst->markSrcRegReady();
 
-                addIfReady(dep_inst);
+                dependentsArr[dependentsArrSize] = dep_inst;
+                ++dependentsArrSize;
 
                 dep_inst = megaDependGraph.pop(dest_reg->flatIndex());
 
@@ -1237,6 +1245,18 @@ InstructionQueue::wakeDependents(const DynInstPtr &completed_inst)
             // been woken up.
             assert(megaDependGraph.empty(dest_reg->flatIndex()));
             megaDependGraph.clearInst(dest_reg->flatIndex());
+        }
+
+        assert(dependentsArrSize < dependentsArrMaxSize);
+
+        // sort the instructions
+        // This is essentially the Re-Shuffle buffer
+        std::sort(std::begin(dependentsArr), std::begin(dependentsArr) + dependentsArrSize, [](const DynInstPtr& a, const DynInstPtr& b) {
+            return a->seqNum < b->seqNum;
+        });
+
+        for (int idx = 0; idx < dependentsArrSize; idx++) {
+            addIfReady(dependentsArr[idx]);
         }
 
         // Mark the scoreboard as having that register ready.

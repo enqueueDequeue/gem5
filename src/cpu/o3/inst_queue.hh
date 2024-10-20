@@ -427,7 +427,7 @@ class InstructionQueue
 
     /** Number of free IQ entries left. */
     #define MINI_FACTOR 16
-    #define MINI_MAX_ISOD 4
+    #define MINI_MAX_ISOD 1
 
     unsigned miniFreeEntries;
     unsigned megaFreeEntries;
