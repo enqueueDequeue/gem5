@@ -145,9 +145,11 @@ InstructionQueue::InstructionQueue(CPU *cpu_ptr, IEW *iew_ptr,
                     params.numPhysMatRegs +
                     params.numPhysCCRegs;
 
+    unsigned nMiniEntries = (MINI_FACTOR * numEntries) / (MINI_FACTOR + 1);
+
     //Create an entry for each physical register within the
     //dependency graph.
-    miniDependGraph.resize(numPhysRegs);
+    miniDependGraph.resize(numPhysRegs, nMiniEntries);
     megaDependGraph.resize(numPhysRegs);
 
     // Resize the register scoreboard.
@@ -638,25 +640,8 @@ InstructionQueue::hasReadyInsts()
     return false;
 }
 
-static int dependentRegisterCount(const DynInstPtr &new_inst) {
-    int nDependentSourceOperands = 0;
-
-    for (int src_reg_idx = 0;
-         src_reg_idx < new_inst->numSrcRegs();
-         src_reg_idx++)
-    {
-        // Only add it to the dependency graph if it's not ready.
-        if (!new_inst->readySrcIdx(src_reg_idx)) {
-            nDependentSourceOperands += 1;
-        }
-    }
-
-    return nDependentSourceOperands;
-}
-
-void
-InstructionQueue::logInsert(const DynInstPtr &inst)
-{
+int
+InstructionQueue::isod(const DynInstPtr &inst) {
     int distance = -1;
 
     if (0 != inst->numSrcRegs()) {
@@ -683,6 +668,13 @@ InstructionQueue::logInsert(const DynInstPtr &inst)
         }
     }
 
+    return distance;
+}
+
+void
+InstructionQueue::logInsert(const DynInstPtr &inst)
+{
+    int distance = isod(inst);
 
     DPRINTF(IQ, "logging: %s, distance: %d\n", format_inst(inst), distance);
 
@@ -713,7 +705,7 @@ InstructionQueue::insert(const DynInstPtr &new_inst)
 
     instList[new_inst->threadNumber].push_back(new_inst);
 
-    if (dependentRegisterCount(new_inst) <= 1) {
+    if (isod(new_inst) < MINI_MAX_ISOD) {
         new_inst->iqTag = MINI_IQ_TAG;
         --miniFreeEntries;
     } else {
@@ -769,7 +761,7 @@ InstructionQueue::insertNonSpec(const DynInstPtr &new_inst)
 
     instList[new_inst->threadNumber].push_back(new_inst);
 
-    if (dependentRegisterCount(new_inst) <= 1) {
+    if (isod(new_inst) < MINI_MAX_ISOD) {
         new_inst->iqTag = MINI_IQ_TAG;
         --miniFreeEntries;
     } else {
@@ -1036,8 +1028,10 @@ InstructionQueue::scheduleReadyInsts()
                 assert(issuing_inst->iqTag == MINI_IQ_TAG || issuing_inst->iqTag == MEGA_IQ_TAG);
 
                 if (issuing_inst->iqTag == MINI_IQ_TAG) {
+                    miniDependGraph.retract(issuing_inst);
                     ++miniFreeEntries;
                 } else {
+                    megaDependGraph.retract(issuing_inst);
                     ++megaFreeEntries;
                 }
 
@@ -1145,8 +1139,10 @@ InstructionQueue::wakeDependents(const DynInstPtr &completed_inst)
         assert(completed_inst->iqTag == MINI_IQ_TAG || completed_inst->iqTag == MEGA_IQ_TAG);
 
         if (completed_inst->iqTag == MINI_IQ_TAG) {
+            miniDependGraph.retract(completed_inst);
             ++miniFreeEntries;
         } else {
+            megaDependGraph.retract(completed_inst);
             ++megaFreeEntries;
         }
 
@@ -1524,6 +1520,13 @@ InstructionQueue::doSquash(ThreadID tid)
                 megaDependGraph.clearInst(dest_reg->flatIndex());
             }
         }
+
+        if (squashed_inst->iqTag == MINI_IQ_TAG) {
+            miniDependGraph.retract(squashed_inst);
+        } else {
+            megaDependGraph.retract(squashed_inst);
+        }
+
         instList[tid].erase(squash_it--);
         ++iqStats.squashedInstsExamined;
     }
@@ -1544,9 +1547,7 @@ InstructionQueue::addToDependents(const DynInstPtr &new_inst)
     int8_t total_src_regs = new_inst->numSrcRegs();
     bool return_val = false;
 
-    int nDependentSourceOperands = dependentRegisterCount(new_inst);
-
-    if (nDependentSourceOperands <= 1) {
+    if (isod(new_inst) < MINI_MAX_ISOD) {
         for (int src_reg_idx = 0;
             src_reg_idx < total_src_regs;
             src_reg_idx++)
@@ -1632,9 +1633,7 @@ InstructionQueue::addToProducers(const DynInstPtr &new_inst)
     // the dependency links.
     int8_t total_dest_regs = new_inst->numDestRegs();
 
-    int nDependentSourceOperands = dependentRegisterCount(new_inst);
-
-    if (nDependentSourceOperands <= 1) {
+    if (isod(new_inst) < MINI_MAX_ISOD) {
         for (int dest_reg_idx = 0;
          dest_reg_idx < total_dest_regs;
          dest_reg_idx++)
