@@ -672,6 +672,36 @@ InstructionQueue::isod(const DynInstPtr &inst) {
     return distance;
 }
 
+bool
+InstructionQueue::fitsIq1(const DynInstPtr &inst) {
+    if (0 != inst->numSrcRegs()) {
+        bool valid = false;
+        RegIndex min = UINT16_MAX;
+        RegIndex max = 0;
+
+        for (size_t regIdx = 0; regIdx < inst->numSrcRegs(); regIdx++) {
+            RegIndex destRegIdx = inst->renamedSrcIdx(regIdx)->flatIndex();
+
+            if (!inst->readySrcIdx(regIdx)) {
+                valid = true;
+                min = std::min(destRegIdx, min);
+                max = std::max(destRegIdx, max);
+            }
+        }
+
+        // if all the source registers are ready
+        // then it's !valid, so, distance = -1
+        if (valid) {
+            int minBin = min / MINI_MAX_ISOD;
+            int maxBin = max / MINI_MAX_ISOD;
+
+            return minBin == maxBin;
+        }
+    }
+
+    return true;
+}
+
 void
 InstructionQueue::logInsert(const DynInstPtr &inst)
 {
@@ -706,7 +736,7 @@ InstructionQueue::insert(const DynInstPtr &new_inst)
 
     instList[new_inst->threadNumber].push_back(new_inst);
 
-    if (isod(new_inst) < MINI_MAX_ISOD) {
+    if (fitsIq1(new_inst)) {
         new_inst->iqTag = MINI_IQ_TAG;
         --miniFreeEntries;
     } else {
@@ -762,7 +792,7 @@ InstructionQueue::insertNonSpec(const DynInstPtr &new_inst)
 
     instList[new_inst->threadNumber].push_back(new_inst);
 
-    if (isod(new_inst) < MINI_MAX_ISOD) {
+    if (fitsIq1(new_inst)) {
         new_inst->iqTag = MINI_IQ_TAG;
         --miniFreeEntries;
     } else {
@@ -1548,7 +1578,7 @@ InstructionQueue::addToDependents(const DynInstPtr &new_inst)
     int8_t total_src_regs = new_inst->numSrcRegs();
     bool return_val = false;
 
-    if (isod(new_inst) < MINI_MAX_ISOD) {
+    if (fitsIq1(new_inst)) {
         for (int src_reg_idx = 0;
             src_reg_idx < total_src_regs;
             src_reg_idx++)
@@ -1634,7 +1664,7 @@ InstructionQueue::addToProducers(const DynInstPtr &new_inst)
     // the dependency links.
     int8_t total_dest_regs = new_inst->numDestRegs();
 
-    if (isod(new_inst) < MINI_MAX_ISOD) {
+    if (fitsIq1(new_inst)) {
         for (int dest_reg_idx = 0;
          dest_reg_idx < total_dest_regs;
          dest_reg_idx++)

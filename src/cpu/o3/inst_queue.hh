@@ -462,6 +462,8 @@ class InstructionQueue
 
     int isod(const DynInstPtr &inst);
 
+    bool fitsIq1(const DynInstPtr &inst);
+
     void logInsert(const DynInstPtr &inst);
 
     /** Adds an instruction to the dependency graph, as a consumer. */
